@@ -1,43 +1,39 @@
-# SkinBloom Facebook/Instagram AI Bot
+# SkinBloom Bot v2.0 🌸
 
-## Render дээр суулгах алхмууд
+Facebook/Instagram AI bot — 582 conversation analysis дээр тулгуурлан бүтээгдсэн.
 
-### 1. GitHub repo үүсгэх
+## Шинэчлэлт (v2.0)
+- ✅ Conversation history (24 цаг хадгална)
+- ✅ Deduplication (давхар хариулахгүй)
+- ✅ Comment-д тусгай товч prompt
+- ✅ DM-д бүрэн history-тэй хариулт
+- ✅ Keep-alive (Render free tier 15 мин унтах асуудал засгасан)
+- ✅ /stats endpoint (идэвхтэй conversation хянах)
+- ✅ Бодит үнэ: 199,900₮ (269,000₮-с)
+- ✅ Запас: 29,900₮
+- ✅ Хаан банкны данс мэдээлэл автоматаар
+
+## GitHub-д push хийх
 ```bash
-git init
-git add .
-git commit -m "SkinBloom bot init"
-git remote add origin https://github.com/yourusername/skinbloom-bot
-git push -u origin main
+cd skinbloom-bot
+git add -A
+git commit -m "v2.0: data-driven upgrade"
+git push origin main
 ```
+→ Render автоматаар deploy хийнэ
 
-### 2. Render Web Service үүсгэх
-- render.com → New → Web Service
-- GitHub repo холбох
-- Build command: `npm install`
-- Start command: `node index.js`
-- Instance: Free (эхлэхэд)
-
-### 3. Environment Variables нэм
-Render dashboard → Environment → Add:
+## Environment Variables
 ```
 OPENAI_API_KEY=sk-...
 META_VERIFY_TOKEN=skinbloom_webhook_2024
 META_APP_SECRET=...
 PAGE_ACCESS_TOKEN=...
+RENDER_URL=https://skinbloom-bot.onrender.com
 ```
 
-### 4. Meta App тохируулах
-1. developers.facebook.com → Apps → Create App
-2. "Business" сонгох
-3. Messenger болон Instagram суулгах
-4. Webhook URL: https://your-service.onrender.com/webhook
-5. Verify Token: skinbloom_webhook_2024
-6. Subscribe: messages, messaging_postbacks, feed (comments)
-
-### 5. Page Access Token авах
-- Graph API Explorer → Page сонгох → Generate token
-- Permission: pages_messaging, pages_read_engagement, instagram_basic, instagram_manage_messages
-
-## Ажиллах зарчим
-User comment/DM → Meta webhook → Render server → GPT-4o-mini → Auto reply
+## Endpoints
+- GET /         → Status + active conversation тоо
+- GET /health   → Keep-alive ping
+- GET /stats    → Бүх идэвхтэй conversation жагсаалт
+- GET /webhook  → Meta verify
+- POST /webhook → Meta events

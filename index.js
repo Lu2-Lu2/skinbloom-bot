@@ -11,10 +11,6 @@ const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
-// ══════════════════════════════════════════════════════════════
-// SYSTEM PROMPT — 582 conversation + 155 comment шинжилгээнд
-// тулгуурласан. Бодит хэрэглэгчийн хэв маягт тохирсон.
-// ══════════════════════════════════════════════════════════════
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна.
 
 ━━ БҮТЭЭГДЭХҮҮН ━━
@@ -73,9 +69,9 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Монгол хэлээр товч, 1-3 өгүүлбэр (DM), 1 өгүүлбэр (comment)
 • "Усанд орох" болон "шүршүүрт орох" хоёул ижил утгатай — Монголчууд хоёуланг нь адилхан хэлдэг тул хоёуланг нь зөв гэж ойлго
 • "Шүршүүр хийх" гэж битгий хэл
-• Хэрэглэгч утас/хаяг дутуу өгвөл "явуулаарай" гэж хүс (мэдэгдэнэ үү биш)
-• Хэрэглэгчийн үг утга нь тодорхойгүй байвал ЗАСАХГҮЙ — харин эелдэгээр лавлаж асуу. Жишээ: "Таны хэлсэн '.....' гэдэг нь ямар утгаар хэлсэн бэ? 🌸" гэж зөөлөн өнгө аясаар асуу
-• Хэрэглэгчийн хэлсэн үгийг хэзээ ч засаж, зааж сургахгүй — зөвхөн ойлгохын тулд лавлана
+• Хэрэглэгч утас/хаяг дутуу өгвөл "явуулаарай" гэж хүс
+• Хэрэглэгчийн үг утга нь тодорхойгүй байвал ЗАСАХГҮЙ — харин эелдэгээр лавлаж асуу. Жишээ: "Таны хэлсэн '.....' гэдэг нь ямар утгаар хэлсэн бэ? 🌸"
+• Хэрэглэгчийн хэлсэн үгийг хэзээ ч засаж, зааж сургахгүй
 • "avsaan", "zuv zuv", "done" гэж бичвэл баярлалаа гэж хариул
 • Хэрэглэгч давтан асуувал шинэ мэдээлэл нэм, давталтаас зайл
 • "багцаас нь авна" гэвэл Pearl White-г санал бол
@@ -84,8 +80,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Баталгаа асуувал: "Үйлдвэрийн алдаатай бол 1 сарын дотор буцааж солино 🌸"`;
 
 // ══════════════════════════════════════════════════════════════
-// COMMENT-Д ЗОРИУЛСАН ТУСГАЙ PROMPT
-// 155 comment-ийн 73/155 нь DM funnel — энэ загварыг оновчтой болгосон
+// COMMENT PROMPT — Facebook/Instagram comment-д хариулах
 // ══════════════════════════════════════════════════════════════
 const COMMENT_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Facebook/Instagram comment-д хариулна.
 
@@ -98,12 +93,11 @@ const COMMENT_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Fa
 • Буруу ойлголт засах: "Усыг тунгалаг цэвэр болгодог шүүлтүүр юм! Үсэнд биш усанд нөлөөлнө 💧"`;
 
 // ══════════════════════════════════════════════════════════════
-// CONVERSATION HISTORY — senderId-аар хадгалдаг
-// 84 алдагдсан lead-ийн шалтгаан: history-гүй давтамжит асуулт
+// CONVERSATION HISTORY
 // ══════════════════════════════════════════════════════════════
 const conversations = new Map();
 const MAX_HISTORY = 16;
-const CONV_TTL = 24 * 60 * 60 * 1000; // 24 цаг
+const CONV_TTL = 24 * 60 * 60 * 1000;
 
 function getHistory(senderId) {
   const conv = conversations.get(senderId);
@@ -129,32 +123,23 @@ function addToHistory(senderId, role, content) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// DM/MESSENGER — history-тэй бүрэн хариулт
+// GPT FUNCTIONS
 // ══════════════════════════════════════════════════════════════
 async function askGPT_DM(senderId, userText) {
   const history = getHistory(senderId);
   addToHistory(senderId, 'user', userText);
-
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...getHistory(senderId).slice(-MAX_HISTORY)
   ];
-
   const res = await axios.post('https://api.openai.com/v1/chat/completions', {
-    model: 'gpt-4o-mini',
-    messages,
-    temperature: 0.6,
-    max_tokens: 350
+    model: 'gpt-4o-mini', messages, temperature: 0.6, max_tokens: 350
   }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
-
   const reply = res.data.choices[0].message.content.trim();
   addToHistory(senderId, 'assistant', reply);
   return reply;
 }
 
-// ══════════════════════════════════════════════════════════════
-// COMMENT — history-гүй, товч хариулт
-// ══════════════════════════════════════════════════════════════
 async function askGPT_Comment(commenterName, commentText) {
   const prompt = `Коммент хийсэн хэрэглэгч: ${commenterName || 'хэрэглэгч'}\nКоммент: ${commentText}`;
   const res = await axios.post('https://api.openai.com/v1/chat/completions', {
@@ -163,14 +148,13 @@ async function askGPT_Comment(commenterName, commentText) {
       { role: 'system', content: COMMENT_PROMPT },
       { role: 'user', content: prompt }
     ],
-    temperature: 0.6,
-    max_tokens: 120
+    temperature: 0.6, max_tokens: 120
   }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
   return res.data.choices[0].message.content.trim();
 }
 
 // ══════════════════════════════════════════════════════════════
-// META SIGNATURE VERIFY
+// META HELPERS
 // ══════════════════════════════════════════════════════════════
 function verifySignature(req) {
   if (!APP_SECRET) return true;
@@ -178,21 +162,14 @@ function verifySignature(req) {
   if (!sig) return false;
   const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET)
     .update(req.rawBody).digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  } catch {
-    return false;
-  }
+  try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); }
+  catch { return false; }
 }
 
-// ══════════════════════════════════════════════════════════════
-// META API HELPERS
-// ══════════════════════════════════════════════════════════════
 async function sendDM(recipientId, text) {
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
-      recipient: { id: recipientId },
-      message: { text }
+      recipient: { id: recipientId }, message: { text }
     }, { params: { access_token: PAGE_TOKEN } });
     console.log(`✓ DM sent → ${recipientId}`);
   } catch (e) {
@@ -211,8 +188,20 @@ async function replyToComment(commentId, text) {
   }
 }
 
+// Comment-ийн эзэнд DM явуулах (reply comment дээр)
+async function sendDMToCommenter(commenterId, commenterName, context) {
+  if (!commenterId) return;
+  try {
+    const dmText = await askGPT_DM(commenterId, `[Comment контекст: "${context}"] — хэрэглэгч comment дээр reply бичсэн.`);
+    await sendDM(commenterId, dmText);
+    console.log(`✓ DM sent to commenter ${commenterName} (${commenterId})`);
+  } catch (e) {
+    console.error(`✗ DM to commenter error:`, e.message);
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
-// DEDUPLICATION — давхардсан event хэрэгжүүлэхгүй байх
+// DEDUPLICATION
 // ══════════════════════════════════════════════════════════════
 const processedEvents = new Set();
 function isDuplicate(id) {
@@ -238,11 +227,11 @@ app.get('/webhook', (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// MAIN WEBHOOK — бүх event handler
+// MAIN WEBHOOK
 // ══════════════════════════════════════════════════════════════
 app.post('/webhook', async (req, res) => {
   if (!verifySignature(req)) return res.sendStatus(401);
-  res.sendStatus(200); // Meta-д шууд хариул
+  res.sendStatus(200);
 
   const body = req.body;
   if (!['page', 'instagram'].includes(body.object)) return;
@@ -252,19 +241,14 @@ app.post('/webhook', async (req, res) => {
 
     // ── 1. MESSENGER / INSTAGRAM DM ──────────────────────────
     for (const event of (entry.messaging || [])) {
-      // Echo болон bot-ийн өөрийн мессеж алгасах
       if (event.message?.is_echo) continue;
       if (event.sender?.id === pageId) continue;
-
       const mid = event.message?.mid;
       if (mid && isDuplicate(mid)) continue;
-
       const senderId = event.sender?.id;
       const text = event.message?.text;
       if (!senderId || !text) continue;
-
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
-
       try {
         const reply = await askGPT_DM(senderId, text);
         await sendDM(senderId, reply);
@@ -274,36 +258,47 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // ── 2. FACEBOOK FEED CHANGES (comment, post) ─────────────
+    // ── 2. FACEBOOK FEED CHANGES ──────────────────────────────
     for (const change of (entry.changes || [])) {
       console.log(`📦 change: field=${change.field} item=${change.value?.item} verb=${change.value?.verb} from=${change.value?.from?.name}`);
       if (change.field !== 'feed') continue;
       const val = change.value;
 
-      // Facebook comment (шинэ, reply биш)
       if (val.item === 'comment' && val.verb === 'add') {
         const commentId = val.comment_id;
         const commentText = val.message;
         const commenterName = val.from?.name || '';
         const commenterId = val.from?.id;
 
-        // Өөрийн comment-д хариулахгүй
         if (commenterId === pageId) continue;
         if (!commentText || !commentId) continue;
         if (isDuplicate(commentId)) continue;
 
-        // Reply-д хариулахгүй (зөвхөн шинэ comment)
-        // parent_id === post_id бол шинэ comment, parent_id !== post_id бол reply
-        if (val.parent_id && val.parent_id !== val.post_id) continue;
+        const isReply = val.parent_id && val.parent_id !== val.post_id;
 
-        console.log(`💬 FB Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
-
-        try {
-          const reply = await askGPT_Comment(commenterName, commentText);
-          await replyToComment(commentId, reply);
-        } catch (e) {
-          console.error('GPT comment error:', e.message);
-          await replyToComment(commentId, `${commenterName ? commenterName + ' ' : ''}Сайн байна уу? 🌸 Тань руу зурвас илгээлээ, Message Request хэсэгээ шалгаарай.`);
+        if (isReply) {
+          // ── Reply comment: comment-д хариул + DM явуул ──
+          console.log(`💬 FB Reply [${commenterName}]: ${commentText.slice(0, 60)}`);
+          try {
+            const commentReply = await askGPT_Comment(commenterName, commentText);
+            await replyToComment(commentId, commentReply);
+            // DM-д дэлгэрэнгүй мэдээлэл явуул
+            await sendDMToCommenter(commenterId, commenterName, commentText);
+          } catch (e) {
+            console.error('GPT reply comment error:', e.message);
+          }
+        } else {
+          // ── Шинэ comment: comment-д хариул + DM явуул ──
+          console.log(`💬 FB Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
+          try {
+            const commentReply = await askGPT_Comment(commenterName, commentText);
+            await replyToComment(commentId, commentReply);
+            // DM-д дэлгэрэнгүй мэдээлэл явуул
+            await sendDMToCommenter(commenterId, commenterName, commentText);
+          } catch (e) {
+            console.error('GPT comment error:', e.message);
+            await replyToComment(commentId, `${commenterName ? commenterName + ' ' : ''}Сайн байна уу? 🌸 Тань руу зурвас илгээлээ, Message Request хэсэгээ шалгаарай.`);
+          }
         }
       }
     }
@@ -312,21 +307,18 @@ app.post('/webhook', async (req, res) => {
     for (const change of (entry.changes || [])) {
       if (change.field !== 'comments' && change.field !== 'messages') continue;
       const val = change.value;
-
-      // Instagram comment
       if (change.field === 'comments' && val.text) {
         const commentId = val.id;
         const commentText = val.text;
         const commenterName = val.from?.name || '';
-
+        const commenterId = val.from?.id;
         if (!commentId || !commentText) continue;
         if (isDuplicate(commentId)) continue;
-
         console.log(`📸 IG Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
-
         try {
           const reply = await askGPT_Comment(commenterName, commentText);
           await replyToComment(commentId, reply);
+          await sendDMToCommenter(commenterId, commenterName, commentText);
         } catch (e) {
           console.error('GPT IG comment error:', e.message);
         }
@@ -336,8 +328,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// KEEP-ALIVE — Render free tier 15 мин унтдаг асуудлыг засна
-// 14 минут тутам өөрийгөө ping хийнэ
+// KEEP-ALIVE
 // ══════════════════════════════════════════════════════════════
 const RENDER_URL = process.env.RENDER_URL || '';
 if (RENDER_URL) {
@@ -351,18 +342,11 @@ if (RENDER_URL) {
   }, 14 * 60 * 1000);
 }
 
-// ══════════════════════════════════════════════════════════════
-// HEALTH + STATS
-// ══════════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running',
-  version: '2.0.0',
-  time: new Date().toISOString(),
-  active_conversations: conversations.size
+  status: '🌸 SkinBloom Bot running', version: '2.1.0',
+  time: new Date().toISOString(), active_conversations: conversations.size
 }));
-
 app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
-
 app.get('/stats', (req, res) => {
   const convs = [];
   for (const [id, conv] of conversations) {
@@ -372,4 +356,4 @@ app.get('/stats', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.0 listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.1 listening on port ${PORT}`));

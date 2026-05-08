@@ -333,10 +333,15 @@ app.post('/webhook', async (req, res) => {
         if (commenterId === pageId) continue;
         if (!commentText) continue;
         if (!commenterId) {
-          console.log(`⚠️ No commenterId for [${commenterName}] — val.from: ${JSON.stringify(val.from)} | full val: ${JSON.stringify(val).slice(0, 300)}`);
+          console.log(`⚠️ No commenterId for [${commenterName}]`);
           continue;
         }
-        if (isDuplicate(val.comment_id)) continue;
+
+        const dedupeKey = `fb_comment_${val.comment_id}`;
+        if (isDuplicate(dedupeKey)) {
+          console.log(`⏭ Duplicate skipped: ${dedupeKey}`);
+          continue;
+        }
 
         const isReply = val.parent_id && val.parent_id !== val.post_id;
         console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] ID=${commenterId}: ${commentText.slice(0, 60)}`);

@@ -331,11 +331,15 @@ app.post('/webhook', async (req, res) => {
         const commenterId = val.from?.id;
 
         if (commenterId === pageId) continue;
-        if (!commentText || !commenterId) continue;
+        if (!commentText) continue;
+        if (!commenterId) {
+          console.log(`⚠️ No commenterId for [${commenterName}] — val.from: ${JSON.stringify(val.from)} | full val: ${JSON.stringify(val).slice(0, 300)}`);
+          continue;
+        }
         if (isDuplicate(val.comment_id)) continue;
 
         const isReply = val.parent_id && val.parent_id !== val.post_id;
-        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}]: ${commentText.slice(0, 60)}`);
+        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] ID=${commenterId}: ${commentText.slice(0, 60)}`);
 
         // ✅ Зөвхөн DM явуулна — публик comment reply байхгүй
         await sendDMToCommenter(commenterId, commenterName, commentText);

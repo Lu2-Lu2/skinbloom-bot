@@ -53,7 +53,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ━━ ЗАХИАЛГЫН МЭДЭЭЛЭЛ ━━
 • Дэлгүүр: skinbloom.store
-• Хүргэлт: УБ 1-2 хоног, орон нутаг 3-5 хоног
+• Хүргэлт: УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
 • Төлбөр: Хаан банк — данс 5403645877 | IBAN: MN410005005403645877 | Хүлээн авагч: С.Цолмонбаатар
   Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү
 • Шүүрхай хүргэлт: +20,000₮ нэмэлт
@@ -276,6 +276,7 @@ app.post('/webhook', async (req, res) => {
 
     // ── 2. FACEBOOK FEED CHANGES (comment, post) ─────────────
     for (const change of (entry.changes || [])) {
+      console.log(`📦 change: field=${change.field} item=${change.value?.item} verb=${change.value?.verb} from=${change.value?.from?.name}`);
       if (change.field !== 'feed') continue;
       const val = change.value;
 
@@ -292,7 +293,8 @@ app.post('/webhook', async (req, res) => {
         if (isDuplicate(commentId)) continue;
 
         // Reply-д хариулахгүй (зөвхөн шинэ comment)
-        if (val.parent_id) continue;
+        // parent_id === post_id бол шинэ comment, parent_id !== post_id бол reply
+        if (val.parent_id && val.parent_id !== val.post_id) continue;
 
         console.log(`💬 FB Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
 

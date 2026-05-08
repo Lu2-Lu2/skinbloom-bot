@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
@@ -10,14 +12,50 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const OWNER_FB_ID = process.env.OWNER_FB_ID || '';
 
+// ══════════════════════════════════════════════════════════════
+// HANDOFF PERSISTENCE — restart хийхэд хадгалагдана
+// ══════════════════════════════════════════════════════════════
+const HANDOFF_FILE = path.join('/tmp', 'handoff.json');
+
+function loadHandoff() {
+  try {
+    if (fs.existsSync(HANDOFF_FILE)) {
+      const data = JSON.parse(fs.readFileSync(HANDOFF_FILE, 'utf8'));
+      return new Set(data);
+    }
+  } catch (e) { console.error('Handoff load error:', e.message); }
+  return new Set();
+}
+
+function saveHandoff(set) {
+  try { fs.writeFileSync(HANDOFF_FILE, JSON.stringify([...set])); }
+  catch (e) { console.error('Handoff save error:', e.message); }
+}
+
+const humanHandoff = loadHandoff();
+
+function addHandoff(senderId) {
+  humanHandoff.add(senderId);
+  saveHandoff(humanHandoff);
+}
+
+function removeHandoff(senderId) {
+  humanHandoff.delete(senderId);
+  saveHandoff(humanHandoff);
+}
+
+// ══════════════════════════════════════════════════════════════
+// SYSTEM PROMPT
+// ══════════════════════════════════════════════════════════════
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна.
 
 ━━ БҮТЭЭГДЭХҮҮН ━━
 • Pearl White 3-в-1: шүршүүр + filter + sponge + brush — 199,900₮ (269,000₮-с хямдарсан)
   Sponge болон brush үнэгүй дагалдаж ирнэ 🎁
-• Slate Gray: 199,900₮ (269000₮-с хямдарсан) — дотор талд crimson/улаан цагираг. Хүчирхэг дизайн.
-• Obsidian Black: 199,900₮ (269000₮-с хямдарсан) — silver ring, luxury харагдалтай
+• Slate Gray: 199,900₮ (269,000₮-с хямдарсан) — дотор талд crimson/улаан цагираг. Хүчирхэг дизайн.
+• Obsidian Black: 199,900₮ (269,000₮-с хямдарсан) — silver ring, luxury харагдалтай
 • Запас шүүлтүүр: 29,900₮ (44,900₮-с хямдарсан) — 3-6 сард 1 удаа солих
 
 ━━ ГАРАЛ ҮҮСЭЛ ━━
@@ -52,7 +90,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Хүргэлт (үнэгүй): УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
 • Төлбөр: Хаан банк — данс 5403645877 | IBAN: MN410005005403645877 | Хүлээн авагч: С.Цолмонбаатар
   Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү
-• Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS=Тухайн өдөртөө) (орой 8 цагаас хойших захиалга маргааш өглөө хүргэгдэхийг анхаарна уу)
+• Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS — тухайн өдөртөө, орой 8 цагаас хойших захиалга маргааш өглөө)
 • Утас: 95999989
 
 ━━ ЗАХИАЛГА АВАХ ДАРААЛАЛ ━━
@@ -74,34 +112,36 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ━━ ХЭРЭГЛЭГЧИЙН ӨНГӨ АЯС ТАНИХ ━━
 Хэрэглэгчийн бичих хэв маяг, өнгө аясыг судалж тохирсон хариулт өг:
-• Залуу/casual хэлбэр ("yuuu", "hehe", emoji их) → найрсаг, хөнгөн, emoji ашигла
+• Залуу/casual ("yuuu", "hehe", emoji их) → найрсаг, хөнгөн, emoji ашигла
 • Албан ёсны хэлбэр → эелдэг, тодорхой, мэргэжлийн
-• Богино хариулт ("үнэ?", "яах уу?") → богино, цэгцтэй хариул
-• UGC/influencer шинжтэй ("контент хийхэд тохиромжтой юу?", "фото гарна уу?") → брэндийн өнгө аяс, гоо сайхны талыг онцол
+• Богино ("үнэ?", "яах уу?") → богино, цэгцтэй хариул
+• UGC/influencer ("контент хийхэд тохиромжтой юу?", "collab хийх уу?", "ugc", "фото гарна уу?") → "Манай бүтээгдэхүүн фото/видео контентод маш сайн тохирно 📸 Та collaborator болох сонирхолтой байгаа бол манай баг тантай холбогдох болно 🌸 [HANDOFF_NEEDED]" гэж хариул
 • Эргэлзэж байгаа хэрэглэгч → итгэл төрүүлэх (CE сертификат, 50 сая борлуулалт, баталгаа)
-• Зураг/бичлэг илгээсэн → тэр контентоос нь ойлгож хариул (жишээ: bathroom зураг илгээвэл "таны угаалгын өрөөнд маш сайн тохирно!" гэх мэт)
+• Зураг/бичлэг илгээсэн → тэр контентоос нь ойлгож хариул
 
 ━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
 Хэрэглэгч асуусан зүйлд хариулт мэдэхгүй байвал:
 • ХЭЗЭЭ Ч таах, зохиох, буруу мэдээлэл өгөхгүй
-• "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү. Бид таны асуултад түргэн шуурхай хариулах болно 🌸" гэж хариул
+• "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү. Бид таны асуултад түргэн шуурхай хариулах болно 🌸 [HANDOFF_NEEDED]" гэж хариул
 
 ━━ ХАРИУЛАХ ДҮРЭМ ━━
 • Монгол хэлээр товч, 1-3 өгүүлбэр (DM), 1 өгүүлбэр (comment)
 • "Усанд орох" болон "шүршүүрт орох" хоёул ижил утгатай — Монголчууд хоёуланг нь адилхан хэлдэг тул хоёуланг нь зөв гэж ойлго
 • "Шүршүүр хийх" гэж битгий хэл
 • Хэрэглэгч утас/хаяг дутуу өгвөл "явуулаарай" гэж хүс
-• Хэрэглэгчийн үг утга нь тодорхойгүй байвал ЗАСАХГҮЙ — харин эелдэгээр лавлаж асуу. Жишээ: "Таны хэлсэн '.....' гэдэг нь ямар утгаар хэлсэн бэ? 🌸"
-• Хэрэглэгчийн хэлсэн үгийг хэзээ ч засаж, зааж сургахгүй
-• "avsaan", "zuv zuv", "done" гэж бичвэл баярлалаа гэж хариул
-• Хэрэглэгч давтан асуувал шинэ мэдээлэл нэм, давталтаас зайл
-• "багцаас нь авна" гэвэл Pearl White-г санал бол
-• Гарал үүсэл асуувал: "Европын CE стандартаар Хонгконгт үйлдвэрлэгдэж, Европ Америкт 50 сая гаруй борлуулалттай trending бүтээгдэхүүн. Бид шууд үйлдвэрээс албан ёсны эрхтэйгээр Монголд нийлүүлдэг 🌸"
-• Суурилуулалт асуувал: "Стандарт шүршүүрийн хоолойнд шууд таарна, тусгай багаж хэрэггүй — 1 минутад суурилна 🔧"
-• Баталгаа асуувал: "Үйлдвэрийн алдаатай бол 1 сарын дотор буцааж солино 🌸"`;
+• Хэрэглэгчийн үг утга тодорхойгүй бол ЗАСАХГҮЙ — эелдэгээр лавла: "Таны хэлсэн '.....' гэдэг нь ямар утгаар хэлсэн бэ? 🌸"
+• Хэрэглэгчийн үгийг хэзээ ч засаж сургахгүй
+• "avsaan", "zuv zuv", "done" гэвэл баярлалаа гэж хариул
+• Давтан асуувал шинэ мэдээлэл нэм, давталтаас зайл
+• "багцаас нь авна" гэвэл Pearl White санал бол
+• Гарал үүсэл: "Европын CE стандартаар Хонгконгт үйлдвэрлэгдэж, Европ Америкт 50 сая гаруй борлуулалттай trending. Бид шууд үйлдвэрээс албан ёсны эрхтэйгээр Монголд нийлүүлдэг 🌸"
+• Суурилуулалт: "Стандарт шүршүүрийн хоолойнд шууд таарна, тусгай багаж хэрэггүй — 1 минутад суурилна 🔧"
+• Баталгаа: "Үйлдвэрийн алдаатай бол 1 сарын дотор буцааж солино 🌸"
+
+ЧУХАЛ: Хариулт дотор [HANDOFF_NEEDED] гэсэн тэмдэг байвал хэрэглэгчид харуулахгүй, зөвхөн системд ашиглана. Хариулт явуулахдаа [HANDOFF_NEEDED] тэмдгийг УСТГА.`;
 
 // ══════════════════════════════════════════════════════════════
-// COMMENT PROMPT — Facebook/Instagram comment-д хариулах
+// COMMENT PROMPT
 // ══════════════════════════════════════════════════════════════
 const COMMENT_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Facebook/Instagram comment-д хариулна.
 
@@ -111,14 +151,12 @@ const COMMENT_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Fa
 • Дараа нь DM руу урина: "Тань руу зурвас илгээлээ, Message Request хэсэгээ шалгаарай 🌸"
 • Шүүлтүүр асуувал: "Тийм, запас шүүлтүүр байгаа! DM-д илүү дэлгэрэнгүй мэдээлэл явуулсан 🌸"
 • Захиалах асуувал: "skinbloom.store-с захиалж болно, мөн DM-д тусламж үзүүлнэ 🌸"
-• Буруу ойлголт засах: "Усыг тунгалаг цэвэр болгодог шүүлтүүр юм! Үсэнд биш усанд нөлөөлнө 💧"`;
+• Буруу ойлголт: "Усыг тунгалаг цэвэр болгодог шүүлтүүр юм! Үсэнд биш усанд нөлөөлнө 💧"`;
 
 // ══════════════════════════════════════════════════════════════
 // CONVERSATION HISTORY
 // ══════════════════════════════════════════════════════════════
 const conversations = new Map();
-// Human handoff — эзэн хариулж байгаа хэрэглэгчид bot хариулахгүй
-const humanHandoff = new Set();
 const MAX_HISTORY = 16;
 const CONV_TTL = 24 * 60 * 60 * 1000;
 
@@ -211,27 +249,31 @@ async function replyToComment(commentId, text) {
   }
 }
 
-// Comment-ийн эзэнд DM явуулах (reply comment дээр)
 async function sendDMToCommenter(commenterId, commenterName, context) {
   if (!commenterId) return;
+  // Handoff горимд байгаа хэрэглэгчид DM явуулахгүй
+  if (humanHandoff.has(commenterId)) {
+    console.log(`⏭ Handoff — skip DM to commenter ${commenterName}`);
+    return;
+  }
   try {
-    const dmText = await askGPT_DM(commenterId, `[Comment контекст: "${context}"] — хэрэглэгч comment дээр reply бичсэн.`);
-    await sendDM(commenterId, dmText);
-    console.log(`✓ DM sent to commenter ${commenterName} (${commenterId})`);
+    const dmText = await askGPT_DM(commenterId, `[Comment контекст: "${context}"] — хэрэглэгч comment бичсэн.`);
+    const cleanText = dmText.replace('[HANDOFF_NEEDED]', '').trim();
+    await sendDM(commenterId, cleanText);
+    if (dmText.includes('[HANDOFF_NEEDED]')) {
+      addHandoff(commenterId);
+      await notifyOwner(commenterId, context);
+      console.log(`🤝 Handoff activated for commenter ${commenterName}`);
+    }
   } catch (e) {
     console.error(`✗ DM to commenter error:`, e.message);
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-// OWNER NOTIFICATION — мэдэхгүй зүйл гарвал эзэнд мэдэгдэх
-// ══════════════════════════════════════════════════════════════
-const OWNER_FB_ID = process.env.OWNER_FB_ID || '';
-
 async function notifyOwner(senderId, senderText) {
   if (!OWNER_FB_ID || !PAGE_TOKEN) return;
   try {
-    const msg = `⚠️ Хэрэглэгч мэдэхгүй зүйл асуулаа — гар хариулт шаардлагатай\n👤 Хэрэглэгчийн ID: ${senderId}\n💬 Асуулт: ${senderText}\n\n→ Мессенжерт нь шууд хариул: https://m.me/${senderId}`;
+    const msg = `⚠️ Гар хариулт шаардлагатай!\n👤 ID: ${senderId}\n💬 Асуулт: ${senderText}\n→ Шууд хариул: https://m.me/${senderId}`;
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
       recipient: { id: OWNER_FB_ID },
       message: { text: msg }
@@ -292,27 +334,31 @@ app.post('/webhook', async (req, res) => {
       const attachments = event.message?.attachments;
       if (!senderId) continue;
 
-      // Human handoff горимд байгаа хэрэглэгчид bot хариулахгүй
+      // Handoff горимд bot хариулахгүй
       if (humanHandoff.has(senderId)) {
         console.log(`⏭ Handoff mode — skipping [${senderId}]`);
         continue;
       }
 
-      // Зураг/attachment илгээсэн тохиолдол
+      // Зураг/attachment
       if (!text && attachments?.length > 0) {
         const attType = attachments[0]?.type;
         if (['image', 'video', 'sticker'].includes(attType)) {
           console.log(`🖼 Attachment [${senderId}]: ${attType}`);
-          // Зургийн URL-г GPT-д дамжуулж контекст ойлгуулна
           const attUrl = attachments[0]?.payload?.url || '';
           const attContext = attType === 'image'
-            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — зургийн URL: ' + attUrl : ''}. Магадгүй: бүтээгдэхүүний зураг харуулж захиалах гэсэн, угаалгын өрөөний зураг илгээсэн, эсвэл контент creator байж болно. Хэрэглэгчийн зорилгыг ойлгож тохирсон хариулт өг.]`
-            : `[Хэрэглэгч ${attType} илгээлээ. Магадгүй бүтээгдэхүүний тухай асуух гэсэн байж болно. Эелдэгээр юу хэрэгтэйг нь асуу.]`;
+            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Магадгүй бүтээгдэхүүний зураг харуулж захиалах гэсэн, угаалгын өрөөний зураг, эсвэл UGC creator байж болно. Зорилгыг ойлгож тохирсон хариулт өг.]`
+            : `[Хэрэглэгч ${attType} илгээлээ. Юу хэрэгтэйг нь эелдэгээр асуу.]`;
           try {
             const reply = await askGPT_DM(senderId, attContext);
-            await sendDM(senderId, reply);
+            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
+            await sendDM(senderId, cleanReply);
+            if (reply.includes('[HANDOFF_NEEDED]')) {
+              addHandoff(senderId);
+              await notifyOwner(senderId, `[${attType} илгээлээ]`);
+            }
           } catch (e) {
-            await sendDM(senderId, 'Зургийг харлаа 🌸 Та SkinBloom-н бүтээгдэхүүний талаар асуух гэсэн үү? Өнгө, үнэ, захиалгын талаар туслая!');
+            await sendDM(senderId, 'Зургийг харлаа 🌸 Та SkinBloom-н бүтээгдэхүүний талаар асуух гэсэн үү?');
           }
         }
         continue;
@@ -322,10 +368,11 @@ app.post('/webhook', async (req, res) => {
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
         const reply = await askGPT_DM(senderId, text);
-        await sendDM(senderId, reply);
-        // Мэдэхгүй зүйл гарвал — handoff горим идэвхжүүлэх
-        if (reply.includes('Манай баг') || reply.includes('KaHeJi')) {
-          humanHandoff.add(senderId);
+        const isHandoff = reply.includes('[HANDOFF_NEEDED]');
+        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
+        await sendDM(senderId, cleanReply);
+        if (isHandoff) {
+          addHandoff(senderId);
           await notifyOwner(senderId, text);
           console.log(`🤝 Handoff activated for ${senderId}`);
         }
@@ -352,30 +399,15 @@ app.post('/webhook', async (req, res) => {
         if (isDuplicate(commentId)) continue;
 
         const isReply = val.parent_id && val.parent_id !== val.post_id;
+        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}]: ${commentText.slice(0, 60)}`);
 
-        if (isReply) {
-          // ── Reply comment: comment-д хариул + DM явуул ──
-          console.log(`💬 FB Reply [${commenterName}]: ${commentText.slice(0, 60)}`);
-          try {
-            const commentReply = await askGPT_Comment(commenterName, commentText);
-            await replyToComment(commentId, commentReply);
-            // DM-д дэлгэрэнгүй мэдээлэл явуул
-            await sendDMToCommenter(commenterId, commenterName, commentText);
-          } catch (e) {
-            console.error('GPT reply comment error:', e.message);
-          }
-        } else {
-          // ── Шинэ comment: comment-д хариул + DM явуул ──
-          console.log(`💬 FB Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
-          try {
-            const commentReply = await askGPT_Comment(commenterName, commentText);
-            await replyToComment(commentId, commentReply);
-            // DM-д дэлгэрэнгүй мэдээлэл явуул
-            await sendDMToCommenter(commenterId, commenterName, commentText);
-          } catch (e) {
-            console.error('GPT comment error:', e.message);
-            await replyToComment(commentId, `${commenterName ? commenterName + ' ' : ''}Сайн байна уу? 🌸 Тань руу зурвас илгээлээ, Message Request хэсэгээ шалгаарай.`);
-          }
+        try {
+          const commentReply = await askGPT_Comment(commenterName, commentText);
+          await replyToComment(commentId, commentReply);
+          await sendDMToCommenter(commenterId, commenterName, commentText);
+        } catch (e) {
+          console.error('GPT comment error:', e.message);
+          await replyToComment(commentId, `${commenterName ? commenterName + ' ' : ''}Сайн байна уу? 🌸 Тань руу зурвас илгээлээ, Message Request хэсэгээ шалгаарай.`);
         }
       }
     }
@@ -420,8 +452,10 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.1.0',
-  time: new Date().toISOString(), active_conversations: conversations.size
+  status: '🌸 SkinBloom Bot running', version: '2.2.0',
+  time: new Date().toISOString(),
+  active_conversations: conversations.size,
+  handoff_count: humanHandoff.size
 }));
 app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 app.get('/stats', (req, res) => {
@@ -429,8 +463,20 @@ app.get('/stats', (req, res) => {
   for (const [id, conv] of conversations) {
     convs.push({ id, msgs: conv.messages.length, lastActivity: new Date(conv.lastActivity) });
   }
-  res.json({ active_conversations: conversations.size, conversations: convs });
+  res.json({
+    active_conversations: conversations.size,
+    handoff_users: [...humanHandoff],
+    conversations: convs
+  });
+});
+
+// Handoff цуцлах endpoint — эзэн хариулсны дараа bot дахин идэвхжинэ
+app.post('/handoff/release/:userId', (req, res) => {
+  const userId = req.params.userId;
+  removeHandoff(userId);
+  console.log(`✓ Handoff released for ${userId}`);
+  res.json({ ok: true, userId, released: true });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.1 listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.2 listening on port ${PORT}`));

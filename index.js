@@ -347,5 +347,3 @@ app.get('/stats', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.0 listening on port ${PORT}`));
-git commit -m "v2.0: data-driven upgrade"
-git push origin main

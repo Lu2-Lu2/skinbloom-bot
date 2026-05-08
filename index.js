@@ -16,8 +16,8 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ━━ БҮТЭЭГДЭХҮҮН ━━
 • Pearl White 3-в-1: шүршүүр + filter + sponge + brush — 199,900₮ (269,000₮-с хямдарсан)
   Sponge болон brush үнэгүй дагалдаж ирнэ 🎁
-• Slate Gray: 199,900₮ — дотор талд crimson/улаан цагираг. Хүчирхэг дизайн.
-• Obsidian Black: 199,900₮ — silver ring, luxury харагдалтай
+• Slate Gray: 199,900₮ (269000₮-с хямдарсан) — дотор талд crimson/улаан цагираг. Хүчирхэг дизайн.
+• Obsidian Black: 199,900₮ (269000₮-с хямдарсан) — silver ring, luxury харагдалтай
 • Запас шүүлтүүр: 29,900₮ (44,900₮-с хямдарсан) — 3-6 сард 1 удаа солих
 
 ━━ ГАРАЛ ҮҮСЭЛ ━━
@@ -49,10 +49,10 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ━━ ЗАХИАЛГЫН МЭДЭЭЛЭЛ ━━
 • Дэлгүүр: skinbloom.store
-• Хүргэлт: УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
+• Хүргэлт (үнэгүй): УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
 • Төлбөр: Хаан банк — данс 5403645877 | IBAN: MN410005005403645877 | Хүлээн авагч: С.Цолмонбаатар
   Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү
-• Шүүрхай хүргэлт: +20,000₮ нэмэлт
+• Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS=Тухайн өдөртөө) (орой 8 цагаас хойших захиалга маргааш өглөө хүргэгдэхийг анхаарна уу)
 • Утас: 95999989
 
 ━━ ЗАХИАЛГА АВАХ ДАРААЛАЛ ━━
@@ -64,6 +64,27 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 5. Утасны дугаар
 → Бүгд бүрэн болмогц: "Таны захиалгыг хүлээн авлаа ✅ Удахгүй холбогдох болно 🌸"
 → Дараа нь Хаан банкны дансны мэдээллийг явуул
+
+━━ ҮНЭ ТАНИЛЦУУЛАХ HOOK ━━
+Үнэ асуухад заавал энэ загварыг ашигла — urgency, value харуулах:
+• Шүршүүр: "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт үргэлжилж байгаа тул яараарай! 🌸"
+• Запас шүүлтүүр: "44,900₮-с хямдарч одоо 29,900₮ болсон 🔥"
+• Pearl White 3-в-1 багц: "Шүршүүр авахад sponge + brush үнэгүй дагалдаж ирнэ — нийт 3 бүтээгдэхүүн авсан хэрэг! 🎁"
+• Urgency: "Одоогийн үнээр авах боломж хязгаарлагдмал тул яаралтай захиалгаа өгөөрэй 🌸"
+
+━━ ХЭРЭГЛЭГЧИЙН ӨНГӨ АЯС ТАНИХ ━━
+Хэрэглэгчийн бичих хэв маяг, өнгө аясыг судалж тохирсон хариулт өг:
+• Залуу/casual хэлбэр ("yuuu", "hehe", emoji их) → найрсаг, хөнгөн, emoji ашигла
+• Албан ёсны хэлбэр → эелдэг, тодорхой, мэргэжлийн
+• Богино хариулт ("үнэ?", "яах уу?") → богино, цэгцтэй хариул
+• UGC/influencer шинжтэй ("контент хийхэд тохиромжтой юу?", "фото гарна уу?") → брэндийн өнгө аяс, гоо сайхны талыг онцол
+• Эргэлзэж байгаа хэрэглэгч → итгэл төрүүлэх (CE сертификат, 50 сая борлуулалт, баталгаа)
+• Зураг/бичлэг илгээсэн → тэр контентоос нь ойлгож хариул (жишээ: bathroom зураг илгээвэл "таны угаалгын өрөөнд маш сайн тохирно!" гэх мэт)
+
+━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
+Хэрэглэгч асуусан зүйлд хариулт мэдэхгүй байвал:
+• ХЭЗЭЭ Ч таах, зохиох, буруу мэдээлэл өгөхгүй
+• "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү. Бид таны асуултад түргэн шуурхай хариулах болно 🌸" гэж хариул
 
 ━━ ХАРИУЛАХ ДҮРЭМ ━━
 • Монгол хэлээр товч, 1-3 өгүүлбэр (DM), 1 өгүүлбэр (comment)
@@ -96,6 +117,8 @@ const COMMENT_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Fa
 // CONVERSATION HISTORY
 // ══════════════════════════════════════════════════════════════
 const conversations = new Map();
+// Human handoff — эзэн хариулж байгаа хэрэглэгчид bot хариулахгүй
+const humanHandoff = new Set();
 const MAX_HISTORY = 16;
 const CONV_TTL = 24 * 60 * 60 * 1000;
 
@@ -201,6 +224,25 @@ async function sendDMToCommenter(commenterId, commenterName, context) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// OWNER NOTIFICATION — мэдэхгүй зүйл гарвал эзэнд мэдэгдэх
+// ══════════════════════════════════════════════════════════════
+const OWNER_FB_ID = process.env.OWNER_FB_ID || '';
+
+async function notifyOwner(senderId, senderText) {
+  if (!OWNER_FB_ID || !PAGE_TOKEN) return;
+  try {
+    const msg = `⚠️ Хэрэглэгч мэдэхгүй зүйл асуулаа — гар хариулт шаардлагатай\n👤 Хэрэглэгчийн ID: ${senderId}\n💬 Асуулт: ${senderText}\n\n→ Мессенжерт нь шууд хариул: https://m.me/${senderId}`;
+    await axios.post('https://graph.facebook.com/v19.0/me/messages', {
+      recipient: { id: OWNER_FB_ID },
+      message: { text: msg }
+    }, { params: { access_token: PAGE_TOKEN } });
+    console.log(`✓ Owner notified about ${senderId}`);
+  } catch (e) {
+    console.error('✗ Owner notify error:', e.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // DEDUPLICATION
 // ══════════════════════════════════════════════════════════════
 const processedEvents = new Set();
@@ -247,11 +289,46 @@ app.post('/webhook', async (req, res) => {
       if (mid && isDuplicate(mid)) continue;
       const senderId = event.sender?.id;
       const text = event.message?.text;
-      if (!senderId || !text) continue;
+      const attachments = event.message?.attachments;
+      if (!senderId) continue;
+
+      // Human handoff горимд байгаа хэрэглэгчид bot хариулахгүй
+      if (humanHandoff.has(senderId)) {
+        console.log(`⏭ Handoff mode — skipping [${senderId}]`);
+        continue;
+      }
+
+      // Зураг/attachment илгээсэн тохиолдол
+      if (!text && attachments?.length > 0) {
+        const attType = attachments[0]?.type;
+        if (['image', 'video', 'sticker'].includes(attType)) {
+          console.log(`🖼 Attachment [${senderId}]: ${attType}`);
+          // Зургийн URL-г GPT-д дамжуулж контекст ойлгуулна
+          const attUrl = attachments[0]?.payload?.url || '';
+          const attContext = attType === 'image'
+            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — зургийн URL: ' + attUrl : ''}. Магадгүй: бүтээгдэхүүний зураг харуулж захиалах гэсэн, угаалгын өрөөний зураг илгээсэн, эсвэл контент creator байж болно. Хэрэглэгчийн зорилгыг ойлгож тохирсон хариулт өг.]`
+            : `[Хэрэглэгч ${attType} илгээлээ. Магадгүй бүтээгдэхүүний тухай асуух гэсэн байж болно. Эелдэгээр юу хэрэгтэйг нь асуу.]`;
+          try {
+            const reply = await askGPT_DM(senderId, attContext);
+            await sendDM(senderId, reply);
+          } catch (e) {
+            await sendDM(senderId, 'Зургийг харлаа 🌸 Та SkinBloom-н бүтээгдэхүүний талаар асуух гэсэн үү? Өнгө, үнэ, захиалгын талаар туслая!');
+          }
+        }
+        continue;
+      }
+
+      if (!text) continue;
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
         const reply = await askGPT_DM(senderId, text);
         await sendDM(senderId, reply);
+        // Мэдэхгүй зүйл гарвал — handoff горим идэвхжүүлэх
+        if (reply.includes('Манай баг') || reply.includes('KaHeJi')) {
+          humanHandoff.add(senderId);
+          await notifyOwner(senderId, text);
+          console.log(`🤝 Handoff activated for ${senderId}`);
+        }
       } catch (e) {
         console.error('GPT DM error:', e.message);
         await sendDM(senderId, 'Уучлаарай, дахин оролдоно уу. skinbloom.store эсвэл 95999989 🌸');

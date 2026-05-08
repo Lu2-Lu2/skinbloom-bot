@@ -321,7 +321,7 @@ app.post('/webhook', async (req, res) => {
 
     // ── 2. FACEBOOK FEED COMMENTS — зөвхөн DM, публик reply үгүй ──
     for (const change of (entry.changes || [])) {
-      console.log(`📦 change: field=${change.field} item=${change.value?.item} verb=${change.value?.verb} from=${change.value?.from?.name}`);
+      console.log(`📦 RAW: ${JSON.stringify(change).slice(0, 500)}`);
       if (change.field !== 'feed') continue;
       const val = change.value;
 

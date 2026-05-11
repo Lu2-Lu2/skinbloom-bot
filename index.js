@@ -45,6 +45,10 @@ function removeHandoff(senderId) {
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна.
 
+━━ МЭНДЧИЛГЭЭ ━━
+Хэрэглэгч анх холбоо барьж ирвэл ингэж мэндэл (яаж байна гэж асуухгүй):
+"Сайн уу! ✨ Өнгө сонгоход тусалъя уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу?"
+
 ━━ БҮТЭЭГДЭХҮҮН ━━
 • Pearl White 3-в-1: шүршүүр + filter + sponge + brush — 199,900₮ (269,000₮-с хямдарсан)
   Sponge болон brush үнэгүй дагалдаж ирнэ 🎁
@@ -296,7 +300,7 @@ app.post('/webhook', async (req, res) => {
               await notifyOwner(senderId, `[${attType} илгээлээ]`);
             }
           } catch (e) {
-            await sendDM(senderId, 'Зургийг харлаа 🌸 Та SkinBloom-н бүтээгдэхүүний талаар асуух гэсэн үү?');
+            await sendDM(senderId, 'Зургийг харлаа 🌸 Бүтээгдэхүүний талаар юу мэдэхийг хүсэж байна вэ?');
           }
         }
         continue;
@@ -346,7 +350,6 @@ app.post('/webhook', async (req, res) => {
         const isReply = val.parent_id && val.parent_id !== val.post_id;
         console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] ID=${commenterId}: ${commentText.slice(0, 60)}`);
 
-        // ✅ Зөвхөн DM явуулна — публик comment reply байхгүй
         await sendDMToCommenter(commenterId, commenterName, commentText);
       }
     }
@@ -362,7 +365,6 @@ app.post('/webhook', async (req, res) => {
         if (!commentText || !commenterId) continue;
         if (isDuplicate(val.id)) continue;
         console.log(`📸 IG Comment [${commenterName}]: ${commentText.slice(0, 60)}`);
-        // ✅ Зөвхөн DM
         await sendDMToCommenter(commenterId, commenterName, commentText);
       }
     }
@@ -382,7 +384,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.3.0',
+  status: '🌸 SkinBloom Bot running', version: '2.3.1',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -408,4 +410,4 @@ app.post('/handoff/release/:userId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.3 listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.3.1 listening on port ${PORT}`));

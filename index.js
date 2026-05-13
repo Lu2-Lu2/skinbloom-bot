@@ -30,6 +30,46 @@ async function sendTelegram(text) {
   }
 }
 
+// ── TELEGRAM WEBHOOK — /release команд ──
+app.post('/telegram', async (req, res) => {
+  res.sendStatus(200);
+  const msg = req.body?.message;
+  if (!msg) return;
+
+  const chatId = String(msg.chat?.id);
+  const text = msg.text || '';
+
+  // Зөвхөн өөрийн chat-аас ирсэн командыг хүлээн авна
+  if (chatId !== String(TELEGRAM_CHAT_ID)) return;
+
+  if (text.startsWith('/release')) {
+    const parts = text.trim().split(/\s+/);
+    const userId = parts[1];
+
+    if (!userId) {
+      await sendTelegram('⚠️ Хэрэглэгчийн ID оруулна уу.\nЖишээ: <code>/release 24473552475676679</code>');
+      return;
+    }
+
+    if (humanHandoff.has(userId)) {
+      removeHandoff(userId);
+      await sendTelegram(`✅ <b>Handoff унтраагдлаа!</b>\n\n👤 ID: <code>${userId}</code>\n🤖 Bot дахин энэ хэрэглэгчтэй харьцаж эхэллээ.`);
+      console.log(`✓ Handoff released via Telegram for ${userId}`);
+    } else {
+      await sendTelegram(`ℹ️ <code>${userId}</code> handoff горимд байгаагүй.`);
+    }
+  }
+
+  if (text === '/list') {
+    if (humanHandoff.size === 0) {
+      await sendTelegram('ℹ️ Одоо handoff горимд байгаа хэрэглэгч байхгүй.');
+    } else {
+      const list = [...humanHandoff].map(id => `• <code>${id}</code> → https://m.me/${id}`).join('\n');
+      await sendTelegram(`📋 <b>Handoff горимд байгаа хэрэглэгчид:</b>\n\n${list}`);
+    }
+  }
+});
+
 const HANDOFF_FILE = path.join('/tmp', 'handoff.json');
 
 function loadHandoff() {
@@ -61,14 +101,9 @@ function removeHandoff(senderId) {
 
 // ── HANDOFF DETECTION ──
 const HANDOFF_KEYWORDS = [
-  'манай баг',
-  'эргэн холбогдох',
-  'түр хүлээ',
-  'удахгүй холбогдох',
-  'менежер',
-  'холбогдох болно',
-  'тантай холбогдох',
-  'баг тантай'
+  'манай баг', 'эргэн холбогдох', 'түр хүлээ',
+  'удахгүй холбогдох', 'менежер', 'холбогдох болно',
+  'тантай холбогдох', 'баг тантай'
 ];
 
 function shouldTriggerHandoff(reply) {
@@ -100,7 +135,6 @@ async function notifyTelegramUGC(senderId, userText) {
 👉 Хариулах: https://m.me/${senderId}
 
 <i>Контент хийх сонирхолтой хэрэглэгч байна.</i>`;
-
   await sendTelegram(msg);
 }
 
@@ -109,7 +143,6 @@ function isOrderComplete(botReply) {
   return botReply.includes('Таны захиалгыг хүлээн авлаа ✅');
 }
 
-// Захиалга засах хүсэлт илрүүлэх
 const ORDER_EDIT_KEYWORDS = [
   'хаяг солих', 'хаяг өөрчлөх', 'хаяг засах', 'хаяг буруу',
   'утас солих', 'утас өөрчлөх', 'дугаар солих', 'дугаар буруу',
@@ -126,7 +159,6 @@ function isOrderEditRequest(text) {
 
 async function notifyTelegramOrder(senderId, history) {
   const messages = history.slice(-16);
-
   let color = '—', qty = '—', address = '—', phone = '—';
   const fullText = messages.map(m => m.content).join(' ');
 
@@ -153,7 +185,8 @@ async function notifyTelegramOrder(senderId, history) {
 👤 Messenger ID: <code>${senderId}</code>
 💬 Хариулах: https://m.me/${senderId}
 
-🏦 Төлбөр хүлээгдэж байна`;
+🏦 Төлбөр хүлээгдэж байна
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
 
   await sendTelegram(msg);
 }
@@ -165,7 +198,6 @@ async function notifyTelegramOrderEdit(senderId, userText) {
 💬 Засах мэдээлэл: <b>${userText}</b>
 
 👉 Шалгах: https://m.me/${senderId}`;
-
   await sendTelegram(msg);
 }
 
@@ -177,9 +209,8 @@ async function notifyTelegramHandoff(senderId, userText) {
 
 👉 Хариулах: https://m.me/${senderId}
 
-<i>Bot энэ хэрэглэгчид хариулахаа зогссон.</i>
-<i>Дуусмагц: /handoff/release/${senderId}</i>`;
-
+<i>Bot хариулахаа зогссон.</i>
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
   await sendTelegram(msg);
 }
 
@@ -218,14 +249,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ━━ ШҮҮЛТҮҮРИЙН МЭДЭЭЛЭЛ ━━
 • Шүршүүр дотор 1 ширхэг шүүлтүүр суурилсан байгаа — ЗӨВХӨН ТЭР 1 ШИРХЭГ дагалдана
 • Запас шүүлтүүр тусдаа — дагалддаггүй, тусдаа захиалах шаардлагатай
-• Хэрэглэгч "шүүлтүүр хэд дагалддаг вэ?" эсвэл "запас шүүлтүүр байна уу?" эсвэл "хэдэн шүүлтүүр орж ирэх вэ?" гэвэл ЗААВАЛ ингэж хариул:
+• Хэрэглэгч "шүүлтүүр хэд дагалддаг вэ?" эсвэл "запас шүүлтүүр байна уу?" гэвэл:
   "Шүршүүр дотор 1 ширхэг шүүлтүүр суурилсан байгаа — тэр 1 ширхэг дагалдана 🌸 Запас шүүлтүүр хэрэгтэй бол тусдаа 29,900₮-аар авч болно"
 • 3-6 сард 1 удаа солих — 4 хүнтэй айлд 3 сар, 2 хүнтэй айлд 6 сар
 • Шүүлтүүр солих нь маш хялбар — гараараа салгаад шинийг суулгана
 
 ━━ БАТАЛГАА ━━
 • Үйлдвэрийн алдаатай бол 1 сарын дотор буцааж солино
-• Зөвхөн үйлдвэрийн алдаа хамаарна (хэрэглэгчийн гэмтээсэн тохиолдолд хамаарахгүй)
+• Зөвхөн үйлдвэрийн алдаа хамаарна
 • Гэмтэлтэй шүршүүр, brush, sponge бүгд солигдоно
 • Буцаах тохиолдолд зөвхөн шүршүүрийн толгойг буцаана
 
@@ -259,29 +290,26 @@ IBAN: MN410005005403645877
 Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү."
 
 ━━ ЗАХИАЛГА БАТАЛГААЖСАНЫ ДАРАА ЗАСАХ ━━
-Захиалга баталгаажсаны дараа хэрэглэгч мэдээлэл (хаяг, утас, өнгө, тоо) засмаар байна гэвэл:
+Захиалга баталгаажсаны дараа хэрэглэгч мэдээлэл засмаар байна гэвэл:
 "Мэдээллийг шинэчилье 🌸 [засах мэдээллийг] өөрчилсөн байна. Бусад мэдээлэл зөв үү?"
-гэж хариулж баталгаажуулах. Засварыг хүлээн авч баталгаажуулсны дараа:
-"Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
+Засварыг баталгаажуулсны дараа: "Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
 
 ━━ ҮНЭ ТАНИЛЦУУЛАХ HOOK ━━
 • Шүршүүр: "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт үргэлжилж байгаа тул яараарай! 🌸"
 • Запас шүүлтүүр: "44,900₮-с хямдарч одоо 29,900₮ болсон 🔥"
 • Pearl White 3-в-1 багц: "Шүршүүр авахад sponge + brush үнэгүй дагалдаж ирнэ — нийт 3 бүтээгдэхүүн авсан хэрэг! 🎁"
-• Urgency: "Одоогийн үнээр авах боломж хязгаарлагдмал тул яаралтай захиалгаа өгөөрэй 🌸"
 
 ━━ ХЭРЭГЛЭГЧИЙН ӨНГӨ АЯС ТАНИХ ━━
 • Залуу/casual → найрсаг, хөнгөн, emoji ашигла
 • Албан ёсны → эелдэг, тодорхой
 • Богино асуулт → богино хариул
 • UGC/influencer/collab/контент хийх → "Манай бүтээгдэхүүн фото/видео контентод маш сайн тохирно 📸 Та collaborator болох сонирхолтой байгаа бол манай баг тантай холбогдох болно 🌸 [HANDOFF_NEEDED]"
-• Эргэлзэж байгаа → итгэл төрүүлэх (CE сертификат, 50 сая борлуулалт, баталгаа)
+• Эргэлзэж байгаа → итгэл төрүүлэх
 • "багцаас нь авна" гэвэл Pearl White санал бол
 
 ━━ ЗУРАГ ИРҮҮЛСЭН ҮЕД ━━
-Хэрэглэгч зураг явуулаад зургийн агуулга тодорхойгүй бол (өнгө, бүтээгдэхүүн таних боломжгүй):
+Хэрэглэгч зураг явуулаад зургийн агуулга тодорхойгүй бол:
 "Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн бүтээгдэхүүний дэлгэрэнгүй мэдээллийг өгье!"
-гэж хариул. Хэрэглэгч өнгөө хэлвэл тухайн өнгийн бүтэн мэдээллийг өг.
 
 ━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
 "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү 🌸 [HANDOFF_NEEDED]"
@@ -292,7 +320,6 @@ IBAN: MN410005005403645877
 • "Шүршүүр хийх" гэж битгий хэл
 • Давтан асуувал шинэ мэдээлэл нэм
 • Хэрэглэгчийн үгийг хэзээ ч засаж сургахгүй
-• Гарал үүсэл: "Европын CE стандартаар Хонгконгт үйлдвэрлэгдэж, Европ Америкт 50 сая гаруй борлуулалттай. Бид шууд үйлдвэрээс албан ёсны эрхтэйгээр Монголд нийлүүлдэг 🌸"
 
 ЧУХАЛ: [HANDOFF_NEEDED] болон [ORDER_EDIT] тэмдгүүдийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
 
@@ -457,7 +484,6 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // ── ЗУРАГ / ATTACHMENT ──
       if (!text && attachments?.length > 0) {
         const attType = attachments[0]?.type;
         if (['image', 'video', 'sticker'].includes(attType)) {
@@ -473,7 +499,6 @@ app.post('/webhook', async (req, res) => {
             if (isHandoff) {
               addHandoff(senderId);
               await notifyTelegramHandoff(senderId, `[${attType} илгээлээ]`);
-              console.log(`🤝 Handoff triggered (attachment) for [${senderId}]`);
             }
           } catch (e) {
             await sendDM(senderId, 'Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн дэлгэрэнгүй мэдээллийг өгье!');
@@ -484,9 +509,8 @@ app.post('/webhook', async (req, res) => {
 
       if (!text) continue;
 
-      // ── UGC/INFLUENCER шалгах — GPT-с өмнө ──
       if (isUGCOrInfluencer(text)) {
-        console.log(`📸 UGC/Influencer detected [${senderId}]: ${text.slice(0, 60)}`);
+        console.log(`📸 UGC/Influencer detected [${senderId}]`);
         await notifyTelegramUGC(senderId, text);
       }
 
@@ -500,25 +524,20 @@ app.post('/webhook', async (req, res) => {
 
         await sendDM(senderId, cleanReply);
 
-        // ── ЗАХИАЛГА БЭЛЭН → Telegram ──
         if (isOrder) {
-          console.log(`🛍 Order complete for [${senderId}]`);
-          const history = getHistory(senderId);
-          await notifyTelegramOrder(senderId, history);
+          console.log(`🛍 Order complete [${senderId}]`);
+          await notifyTelegramOrder(senderId, getHistory(senderId));
         }
 
-        // ── ЗАХИАЛГА ЗАСАХ → Telegram ──
         if (isOrderEdit && !isOrder) {
-          console.log(`✏️ Order edit request [${senderId}]`);
           await notifyTelegramOrderEdit(senderId, text);
         }
 
-        // ── HANDOFF → Telegram ──
         if (isHandoff && !isOrder) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
           await notifyTelegramHandoff(senderId, text);
-          console.log(`🤝 Handoff triggered [${senderId}] — ${reply.includes('[HANDOFF_NEEDED]') ? 'tag' : 'keyword'}`);
+          console.log(`🤝 Handoff [${senderId}] — ${reply.includes('[HANDOFF_NEEDED]') ? 'tag' : 'keyword'}`);
         }
 
       } catch (e) {
@@ -540,20 +559,13 @@ app.post('/webhook', async (req, res) => {
 
         if (commenterId === pageId) continue;
         if (!commentText) continue;
-        if (!commenterId) {
-          console.log(`⚠️ No commenterId for [${commenterName}]`);
-          continue;
-        }
+        if (!commenterId) continue;
 
         const dedupeKey = `fb_comment_${val.comment_id}`;
-        if (isDuplicate(dedupeKey)) {
-          console.log(`⏭ Duplicate skipped: ${dedupeKey}`);
-          continue;
-        }
+        if (isDuplicate(dedupeKey)) continue;
 
         const isReply = val.parent_id && val.parent_id !== val.post_id;
-        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] ID=${commenterId}: ${commentText.slice(0, 60)}`);
-
+        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}]: ${commentText.slice(0, 60)}`);
         await sendDMToCommenter(commenterId, commenterName, commentText);
       }
     }
@@ -575,6 +587,21 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// ── TELEGRAM WEBHOOK БҮРТГЭХ ──
+async function registerTelegramWebhook() {
+  if (!TELEGRAM_TOKEN) return;
+  const renderUrl = process.env.RENDER_URL || '';
+  if (!renderUrl) return;
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook`, {
+      url: `${renderUrl}/telegram`
+    });
+    console.log('✓ Telegram webhook registered');
+  } catch (e) {
+    console.error('✗ Telegram webhook error:', e.message);
+  }
+}
+
 const RENDER_URL = process.env.RENDER_URL || '';
 if (RENDER_URL) {
   setInterval(async () => {
@@ -588,7 +615,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.2',
+  status: '🌸 SkinBloom Bot running', version: '2.5.3',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -614,7 +641,8 @@ app.post('/handoff/release/:userId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🌸 SkinBloom Bot v2.5.2 listening on port ${PORT}`);
-  sendTelegram('🌸 <b>SkinBloom Bot v2.5.2 асаалаа!</b>\n\n✅ UGC/Influencer detection\n✅ Order edit notification\n✅ Image color prompt\n✅ Order confirmation message');
+app.listen(PORT, async () => {
+  console.log(`🌸 SkinBloom Bot v2.5.3 listening on port ${PORT}`);
+  await registerTelegramWebhook();
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.3 асаалаа!</b>\n\n✅ Telegram /release команд идэвхтэй\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — handoff горимд байгаа хэрэглэгчид');
 });

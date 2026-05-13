@@ -30,7 +30,7 @@ async function sendTelegram(text) {
   }
 }
 
-// ── TELEGRAM WEBHOOK — /release команд ──
+// ── TELEGRAM WEBHOOK — /release, /list команд ──
 app.post('/telegram', async (req, res) => {
   res.sendStatus(200);
   const msg = req.body?.message;
@@ -39,18 +39,15 @@ app.post('/telegram', async (req, res) => {
   const chatId = String(msg.chat?.id);
   const text = msg.text || '';
 
-  // Зөвхөн өөрийн chat-аас ирсэн командыг хүлээн авна
   if (chatId !== String(TELEGRAM_CHAT_ID)) return;
 
   if (text.startsWith('/release')) {
     const parts = text.trim().split(/\s+/);
     const userId = parts[1];
-
     if (!userId) {
       await sendTelegram('⚠️ Хэрэглэгчийн ID оруулна уу.\nЖишээ: <code>/release 24473552475676679</code>');
       return;
     }
-
     if (humanHandoff.has(userId)) {
       removeHandoff(userId);
       await sendTelegram(`✅ <b>Handoff унтраагдлаа!</b>\n\n👤 ID: <code>${userId}</code>\n🤖 Bot дахин энэ хэрэглэгчтэй харьцаж эхэллээ.`);
@@ -219,9 +216,15 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ━━ ЭХНИЙ МЕССЕЖ — GREETING HANDLER ━━
 Хэрэглэгч анх холбогдоход (сайн уу, hi, hello, мэнд, сайн байна уу, мэдээлэл авья, тавтай морил, юу вэ, танилцуулаач, байна уу гэх мэт) ЗААВАЛ дараах бүтэн текстийг ашигла:
 
-"269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт! Европын CE стандартаар үйлдвэрлэсэн — PP fiber, Carbon, KDF шүүлтүүр нь зэв, хлор, бактер, хүнд металлыг шүүж арьс үсийг хамгаална 💆 Pearl White, Obsidian Black, Slate Gray өнгөнүүдээс аль нэгийг авахад sponge + brush үнэгүй дагалдана 🎁 Та аль өнгийг сонирхож байна вэ?"
+"Сайн байна уу! ✨ Өнгө сонгоход туслах уу?, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу?"
 
 Энэ текстийг ӨӨРЧЛӨХГҮЙ, нэмэхгүй, богиносгохгүй — ямар ч мэндчилгээний мессежид яг ийм л явуул.
+
+━━ GREETING-ИЙН ДАРААХ ХАРИУЛТ ━━
+• Хэрэглэгч "өнгө сонгох", "өнгө", "шүршүүр" гэвэл:
+  "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт! Европын CE стандартаар үйлдвэрлэсэн — PP fiber, Carbon, KDF шүүлтүүр нь зэв, хлор, бактер, хүнд металлыг шүүж арьс үсийг хамгаална 💆 Pearl White, Obsidian Black, Slate Gray өнгөнүүдээс аль нэгийг авахад sponge + brush үнэгүй дагалдана 🎁 Та аль өнгийг сонирхож байна вэ?"
+• Хэрэглэгч "бэлгийн багц", "багц", "бэлэг" гэвэл:
+  "Pearl White 3-в-1 багц: шүршүүр + filter + sponge + brush — 199,900₮ 🎁 Sponge болон brush үнэгүй дагалдаж ирнэ. Хайртай хүндээ онцгой бэлэг болно 🌸 Захиалах уу?"
 
 ━━ БҮТЭЭГДЭХҮҮН ━━
 • Pearl White 3-в-1: шүршүүр + filter + sponge + brush — 199,900₮ (269,000₮-с хямдарсан)
@@ -308,7 +311,7 @@ IBAN: MN410005005403645877
 • "багцаас нь авна" гэвэл Pearl White санал бол
 
 ━━ ЗУРАГ ИРҮҮЛСЭН ҮЕД ━━
-Хэрэглэгч зураг явуулаад зургийн агуулга тодорхойгүй бол:
+Зургийн агуулга тодорхойгүй бол:
 "Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн бүтээгдэхүүний дэлгэрэнгүй мэдээллийг өгье!"
 
 ━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
@@ -615,7 +618,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.3',
+  status: '🌸 SkinBloom Bot running', version: '2.5.4',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -642,7 +645,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.3 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.4 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.3 асаалаа!</b>\n\n✅ Telegram /release команд идэвхтэй\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — handoff горимд байгаа хэрэглэгчид');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.4 асаалаа!</b>\n\n✅ Шинэ greeting: өнгө / бэлгийн багц сонголт\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

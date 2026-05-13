@@ -12,7 +12,23 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-const OWNER_FB_ID = process.env.OWNER_FB_ID || '';
+
+// ── TELEGRAM CONFIG ──
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8788253983:AAFAWRvDNcnUyEY2Wdt0PxT1IrhzBxJqWDI';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '5018438334';
+
+async function sendTelegram(text) {
+  try {
+    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      parse_mode: 'HTML'
+    });
+    console.log('✓ Telegram sent');
+  } catch (e) {
+    console.error('✗ Telegram error:', e.response?.data?.description || e.message);
+  }
+}
 
 const HANDOFF_FILE = path.join('/tmp', 'handoff.json');
 
@@ -41,6 +57,75 @@ function addHandoff(senderId) {
 function removeHandoff(senderId) {
   humanHandoff.delete(senderId);
   saveHandoff(humanHandoff);
+}
+
+// ── ORDER DETECTION ──
+// Захиалга бүрэн болсон гэдгийг GPT хариултаас илрүүлнэ
+// System prompt-д "Таны захиалгыг хүлээн авлаа ✅" гэсэн текст байдаг тул үүнийг ашиглана
+function isOrderComplete(botReply) {
+  return botReply.includes('Таны захиалгыг хүлээн авлаа ✅');
+}
+
+// Захиалгын мэдээллийг conversation history-с задлан гаргана
+function extractOrderInfo(senderId, history) {
+  // History-с сүүлийн 10 message-ийг шалгаж захиалгын мэдээллийг олно
+  const fullConv = history.map(m => `${m.role === 'user' ? '👤' : '🤖'}: ${m.content}`).join('\n');
+  return fullConv;
+}
+
+async function notifyTelegramOrder(senderId, history) {
+  // Conversation-с захиалгын мэдээллийг задлах
+  const messages = history.slice(-16);
+  
+  // Хэрэглэгчийн мэдээллийг олох
+  let color = '—', qty = '—', address = '—', phone = '—', name = '—';
+  
+  const fullText = messages.map(m => m.content).join(' ');
+  
+  // Өнгө
+  const colorMatch = fullText.match(/(Pearl White|Slate Gray|Obsidian Black)/i);
+  if (colorMatch) color = colorMatch[1];
+  
+  // Тоо ширхэг
+  const qtyMatch = fullText.match(/(\d+)\s*(ширхэг|ш\.?)/i);
+  if (qtyMatch) qty = qtyMatch[1] + ' ширхэг';
+  
+  // Утасны дугаар
+  const phoneMatch = fullText.match(/(\d{8})/);
+  if (phoneMatch) phone = phoneMatch[1];
+  
+  // Хаяг — хэрэглэгчийн сүүлийн урт message
+  const userMessages = messages.filter(m => m.role === 'user');
+  const longMsg = userMessages.find(m => m.content.length > 20 && /дүүрэг|хороо|байр|хотхон|гудамж/i.test(m.content));
+  if (longMsg) address = longMsg.content;
+
+  const msg = `🛍 <b>ШИНЭ ЗАХИАЛГА!</b>
+
+🎨 Өнгө: <b>${color}</b>
+📦 Тоо: <b>${qty}</b>
+📍 Хаяг: <b>${address}</b>
+📞 Утас: <b>${phone}</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Хариулах: https://m.me/${senderId}
+
+🏦 Төлбөр хүлээгдэж байна`;
+
+  await sendTelegram(msg);
+}
+
+async function notifyTelegramHandoff(senderId, userText) {
+  const msg = `⚠️ <b>HANDOFF — Гар хариулт шаардлагатай!</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Асуулт: <b>${userText}</b>
+
+👉 Хариулах: https://m.me/${senderId}
+
+<i>Bot энэ хэрэглэгчид хариулахаа зогссон.</i>
+<i>Дуусмагц: /handoff/release/${senderId}</i>`;
+
+  await sendTelegram(msg);
 }
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна.
@@ -208,20 +293,23 @@ async function sendDM(recipientId, text) {
   }
 }
 
-async function notifyOwner(senderId, senderText) {
-  if (!OWNER_FB_ID || !PAGE_TOKEN) return;
+// ── HUMAN AGENT TAG — 7 хоногийн цонх ──
+async function sendDMWithHumanAgent(recipientId, text) {
   try {
-    const msg = `⚠️ Гар хариулт шаардлагатай!\n👤 ID: ${senderId}\n💬 Асуулт: ${senderText}\n→ Шууд хариул: https://m.me/${senderId}`;
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
-      recipient: { id: OWNER_FB_ID },
-      message: { text: msg }
+      recipient: { id: recipientId },
+      message: { text },
+      messaging_type: 'MESSAGE_TAG',
+      tag: 'HUMAN_AGENT'
     }, { params: { access_token: PAGE_TOKEN } });
+    console.log(`✓ Human Agent DM sent → ${recipientId}`);
   } catch (e) {
-    console.error('✗ Owner notify error:', e.message);
+    console.error(`✗ Human Agent DM error:`, e.response?.data?.error?.message || e.message);
+    // Fallback — энгийн DM
+    await sendDM(recipientId, text);
   }
 }
 
-// ✅ Comment-д публик reply байхгүй — зөвхөн DM
 async function sendDMToCommenter(commenterId, commenterName, commentText) {
   if (!commenterId) return;
   if (humanHandoff.has(commenterId)) {
@@ -293,11 +381,12 @@ app.post('/webhook', async (req, res) => {
             : `[Хэрэглэгч ${attType} илгээлээ. Юу хэрэгтэйг нь эелдэгээр асуу.]`;
           try {
             const reply = await askGPT_DM(senderId, attContext);
+            const isHandoff = reply.includes('[HANDOFF_NEEDED]');
             const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
             await sendDM(senderId, cleanReply);
-            if (reply.includes('[HANDOFF_NEEDED]')) {
+            if (isHandoff) {
               addHandoff(senderId);
-              await notifyOwner(senderId, `[${attType} илгээлээ]`);
+              await notifyTelegramHandoff(senderId, `[${attType} илгээлээ]`);
             }
           } catch (e) {
             await sendDM(senderId, 'Зургийг харлаа 🌸 Бүтээгдэхүүний талаар юу мэдэхийг хүсэж байна вэ?');
@@ -311,19 +400,32 @@ app.post('/webhook', async (req, res) => {
       try {
         const reply = await askGPT_DM(senderId, text);
         const isHandoff = reply.includes('[HANDOFF_NEEDED]');
+        const isOrder = isOrderComplete(reply);
         const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
+
         await sendDM(senderId, cleanReply);
+
+        // ── ЗАХИАЛГА БҮРЭН БОЛСОН → Telegram ──
+        if (isOrder) {
+          console.log(`🛍 Order complete for [${senderId}]`);
+          const history = getHistory(senderId);
+          await notifyTelegramOrder(senderId, history);
+        }
+
+        // ── HANDOFF → Telegram ──
         if (isHandoff) {
           addHandoff(senderId);
-          await notifyOwner(senderId, text);
+          await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
+          await notifyTelegramHandoff(senderId, text);
         }
+
       } catch (e) {
         console.error('GPT DM error:', e.message);
         await sendDM(senderId, 'Уучлаарай, дахин оролдоно уу. skinbloom.store эсвэл 95999989 🌸');
       }
     }
 
-    // ── 2. FACEBOOK FEED COMMENTS — зөвхөн DM, публик reply үгүй ──
+    // ── 2. FACEBOOK FEED COMMENTS ──
     for (const change of (entry.changes || [])) {
       console.log(`📦 RAW: ${JSON.stringify(change).slice(0, 500)}`);
       if (change.field !== 'feed') continue;
@@ -354,7 +456,7 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // ── 3. INSTAGRAM COMMENTS — зөвхөн DM ──
+    // ── 3. INSTAGRAM COMMENTS ──
     for (const change of (entry.changes || [])) {
       if (change.field !== 'comments') continue;
       const val = change.value;
@@ -384,7 +486,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.3.1',
+  status: '🌸 SkinBloom Bot running', version: '2.4.0',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -410,4 +512,8 @@ app.post('/handoff/release/:userId', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🌸 SkinBloom Bot v2.3.1 listening on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🌸 SkinBloom Bot v2.4.0 listening on port ${PORT}`);
+  // Telegram test ping
+  sendTelegram('🌸 <b>SkinBloom Bot v2.4.0 асаалаа!</b>\n\nТelegram мэдэгдэл идэвхтэй байна ✅');
+});

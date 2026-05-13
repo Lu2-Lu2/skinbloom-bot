@@ -59,16 +59,75 @@ function removeHandoff(senderId) {
   saveHandoff(humanHandoff);
 }
 
+// ── HANDOFF DETECTION ──
+const HANDOFF_KEYWORDS = [
+  'манай баг',
+  'эргэн холбогдох',
+  'түр хүлээ',
+  'удахгүй холбогдох',
+  'менежер',
+  'холбогдох болно',
+  'тантай холбогдох',
+  'баг тантай'
+];
+
+function shouldTriggerHandoff(reply) {
+  if (reply.includes('[HANDOFF_NEEDED]')) return true;
+  const lower = reply.toLowerCase();
+  return HANDOFF_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+}
+
+// ── UGC/INFLUENCER DETECTION ──
+const UGC_KEYWORDS = [
+  'ugc', 'influencer', 'инфлюэнсер', 'контент хийх', 'контент хийе',
+  'collab', 'коллаб', 'collaborat', 'хамтран', 'хамтарч',
+  'фото хийх', 'видео хийх', 'зураг авах', 'зураг дарах',
+  'бүтээгдэхүүн явуулах', 'бүтээгдэхүүн өгөх', 'pr', 'пиар',
+  'реклам хийх', 'сурталчлах', 'promote'
+];
+
+function isUGCOrInfluencer(text) {
+  const lower = text.toLowerCase();
+  return UGC_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+async function notifyTelegramUGC(senderId, userText) {
+  const msg = `📸 <b>UGC / INFLUENCER хүсэлт!</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Мессеж: <b>${userText}</b>
+
+👉 Хариулах: https://m.me/${senderId}
+
+<i>Контент хийх сонирхолтой хэрэглэгч байна.</i>`;
+
+  await sendTelegram(msg);
+}
+
 // ── ORDER DETECTION ──
 function isOrderComplete(botReply) {
   return botReply.includes('Таны захиалгыг хүлээн авлаа ✅');
+}
+
+// Захиалга засах хүсэлт илрүүлэх
+const ORDER_EDIT_KEYWORDS = [
+  'хаяг солих', 'хаяг өөрчлөх', 'хаяг засах', 'хаяг буруу',
+  'утас солих', 'утас өөрчлөх', 'дугаар солих', 'дугаар буруу',
+  'өнгө солих', 'өнгө өөрчлөх', 'өнгө буруу',
+  'тоо солих', 'тоо өөрчлөх', 'ширхэг солих',
+  'мэдээлэл солих', 'мэдээлэл өөрчлөх', 'засах', 'буруу бичлээ',
+  'буруу оруулсан', 'өөрчилье', 'өөрчлөх'
+];
+
+function isOrderEditRequest(text) {
+  const lower = text.toLowerCase();
+  return ORDER_EDIT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
 async function notifyTelegramOrder(senderId, history) {
   const messages = history.slice(-16);
 
   let color = '—', qty = '—', address = '—', phone = '—';
-
   const fullText = messages.map(m => m.content).join(' ');
 
   const colorMatch = fullText.match(/(Pearl White|Slate Gray|Obsidian Black)/i);
@@ -95,6 +154,17 @@ async function notifyTelegramOrder(senderId, history) {
 💬 Хариулах: https://m.me/${senderId}
 
 🏦 Төлбөр хүлээгдэж байна`;
+
+  await sendTelegram(msg);
+}
+
+async function notifyTelegramOrderEdit(senderId, userText) {
+  const msg = `✏️ <b>ЗАХИАЛГА ЗАСАХ хүсэлт!</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Засах мэдээлэл: <b>${userText}</b>
+
+👉 Шалгах: https://m.me/${senderId}`;
 
   await sendTelegram(msg);
 }
@@ -174,8 +244,25 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 3. Хаяг (дүүрэг, хороо, хотхон/байр/тоот/давхар)
 4. Орцны код (байгаа бол)
 5. Утасны дугаар
-→ Бүгд бүрэн болмогц: "Таны захиалгыг хүлээн авлаа ✅ Удахгүй холбогдох болно 🌸"
-→ Дараа нь Хаан банкны дансны мэдээллийг явуул
+→ Бүгд бүрэн болмогц ЗААВАЛ дараах 2 мессежийг дараалан явуул:
+
+МЕССЕЖ 1:
+"Таны захиалгыг хүлээн авлаа ✅ Удахгүй холбогдох болно 🌸
+
+Таны захиалга баталгаажлаа. Таны хүргэлт 24-48 цагын дотор хаяг дээр хүргэгдэнэ. Манайхыг сонгосон танд баярлалаа 🌸"
+
+МЕССЕЖ 2 (дараа нь шууд):
+"Хаан банкны дансны мэдээлэл:
+Данс: 5403645877
+IBAN: MN410005005403645877
+Хүлээн авагч: С.Цолмонбаатар
+Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү."
+
+━━ ЗАХИАЛГА БАТАЛГААЖСАНЫ ДАРАА ЗАСАХ ━━
+Захиалга баталгаажсаны дараа хэрэглэгч мэдээлэл (хаяг, утас, өнгө, тоо) засмаар байна гэвэл:
+"Мэдээллийг шинэчилье 🌸 [засах мэдээллийг] өөрчилсөн байна. Бусад мэдээлэл зөв үү?"
+гэж хариулж баталгаажуулах. Засварыг хүлээн авч баталгаажуулсны дараа:
+"Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
 
 ━━ ҮНЭ ТАНИЛЦУУЛАХ HOOK ━━
 • Шүршүүр: "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт үргэлжилж байгаа тул яараарай! 🌸"
@@ -187,9 +274,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Залуу/casual → найрсаг, хөнгөн, emoji ашигла
 • Албан ёсны → эелдэг, тодорхой
 • Богино асуулт → богино хариул
-• UGC/influencer → "Манай бүтээгдэхүүн фото/видео контентод маш сайн тохирно 📸 Та collaborator болох сонирхолтой байгаа бол манай баг тантай холбогдох болно 🌸 [HANDOFF_NEEDED]"
+• UGC/influencer/collab/контент хийх → "Манай бүтээгдэхүүн фото/видео контентод маш сайн тохирно 📸 Та collaborator болох сонирхолтой байгаа бол манай баг тантай холбогдох болно 🌸 [HANDOFF_NEEDED]"
 • Эргэлзэж байгаа → итгэл төрүүлэх (CE сертификат, 50 сая борлуулалт, баталгаа)
 • "багцаас нь авна" гэвэл Pearl White санал бол
+
+━━ ЗУРАГ ИРҮҮЛСЭН ҮЕД ━━
+Хэрэглэгч зураг явуулаад зургийн агуулга тодорхойгүй бол (өнгө, бүтээгдэхүүн таних боломжгүй):
+"Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн бүтээгдэхүүний дэлгэрэнгүй мэдээллийг өгье!"
+гэж хариул. Хэрэглэгч өнгөө хэлвэл тухайн өнгийн бүтэн мэдээллийг өг.
 
 ━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
 "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү 🌸 [HANDOFF_NEEDED]"
@@ -202,7 +294,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Хэрэглэгчийн үгийг хэзээ ч засаж сургахгүй
 • Гарал үүсэл: "Европын CE стандартаар Хонгконгт үйлдвэрлэгдэж, Европ Америкт 50 сая гаруй борлуулалттай. Бид шууд үйлдвэрээс албан ёсны эрхтэйгээр Монголд нийлүүлдэг 🌸"
 
-ЧУХАЛ: [HANDOFF_NEEDED] тэмдгийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
+ЧУХАЛ: [HANDOFF_NEEDED] болон [ORDER_EDIT] тэмдгүүдийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
 
 const COMMENT_DM_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Facebook/Instagram-д comment бичсэн хэрэглэгчид DM-ээр хариулна.
 
@@ -365,49 +457,68 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
+      // ── ЗУРАГ / ATTACHMENT ──
       if (!text && attachments?.length > 0) {
         const attType = attachments[0]?.type;
         if (['image', 'video', 'sticker'].includes(attType)) {
           const attUrl = attachments[0]?.payload?.url || '';
           const attContext = attType === 'image'
-            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Магадгүй бүтээгдэхүүний зураг харуулж захиалах гэсэн, угаалгын өрөөний зураг, эсвэл UGC creator байж болно. Зорилгыг ойлгож тохирсон хариулт өг.]`
+            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Зургийн агуулга тодорхойгүй байж болно. Хэрэв өнгө эсвэл бүтээгдэхүүн таних боломжгүй бол хэрэглэгчээс зураг дээрх өнгийг (Pearl White, Slate Gray, Obsidian Black) хэлж өгөхийг хүс.]`
             : `[Хэрэглэгч ${attType} илгээлээ. Юу хэрэгтэйг нь эелдэгээр асуу.]`;
           try {
             const reply = await askGPT_DM(senderId, attContext);
-            const isHandoff = reply.includes('[HANDOFF_NEEDED]');
-            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
+            const isHandoff = shouldTriggerHandoff(reply);
+            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').trim();
             await sendDM(senderId, cleanReply);
             if (isHandoff) {
               addHandoff(senderId);
               await notifyTelegramHandoff(senderId, `[${attType} илгээлээ]`);
+              console.log(`🤝 Handoff triggered (attachment) for [${senderId}]`);
             }
           } catch (e) {
-            await sendDM(senderId, 'Зургийг харлаа 🌸 Бүтээгдэхүүний талаар юу мэдэхийг хүсэж байна вэ?');
+            await sendDM(senderId, 'Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн дэлгэрэнгүй мэдээллийг өгье!');
           }
         }
         continue;
       }
 
       if (!text) continue;
+
+      // ── UGC/INFLUENCER шалгах — GPT-с өмнө ──
+      if (isUGCOrInfluencer(text)) {
+        console.log(`📸 UGC/Influencer detected [${senderId}]: ${text.slice(0, 60)}`);
+        await notifyTelegramUGC(senderId, text);
+      }
+
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
         const reply = await askGPT_DM(senderId, text);
-        const isHandoff = reply.includes('[HANDOFF_NEEDED]');
+        const isHandoff = shouldTriggerHandoff(reply);
         const isOrder = isOrderComplete(reply);
-        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').trim();
+        const isOrderEdit = reply.includes('[ORDER_EDIT]') || isOrderEditRequest(text);
+        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').trim();
 
         await sendDM(senderId, cleanReply);
 
+        // ── ЗАХИАЛГА БЭЛЭН → Telegram ──
         if (isOrder) {
           console.log(`🛍 Order complete for [${senderId}]`);
           const history = getHistory(senderId);
           await notifyTelegramOrder(senderId, history);
         }
 
-        if (isHandoff) {
+        // ── ЗАХИАЛГА ЗАСАХ → Telegram ──
+        if (isOrderEdit && !isOrder) {
+          console.log(`✏️ Order edit request [${senderId}]`);
+          await notifyTelegramOrderEdit(senderId, text);
+        }
+
+        // ── HANDOFF → Telegram ──
+        if (isHandoff && !isOrder) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
           await notifyTelegramHandoff(senderId, text);
+          console.log(`🤝 Handoff triggered [${senderId}] — ${reply.includes('[HANDOFF_NEEDED]') ? 'tag' : 'keyword'}`);
         }
 
       } catch (e) {
@@ -477,7 +588,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.0',
+  status: '🌸 SkinBloom Bot running', version: '2.5.2',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -504,6 +615,6 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌸 SkinBloom Bot v2.5.0 listening on port ${PORT}`);
-  sendTelegram('🌸 <b>SkinBloom Bot v2.5.0 асаалаа!</b>\n\nTelegram мэдэгдэл идэвхтэй байна ✅');
+  console.log(`🌸 SkinBloom Bot v2.5.2 listening on port ${PORT}`);
+  sendTelegram('🌸 <b>SkinBloom Bot v2.5.2 асаалаа!</b>\n\n✅ UGC/Influencer detection\n✅ Order edit notification\n✅ Image color prompt\n✅ Order confirmation message');
 });

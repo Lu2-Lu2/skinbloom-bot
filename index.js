@@ -14,8 +14,8 @@ const APP_SECRET = process.env.META_APP_SECRET;
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
 // ── TELEGRAM CONFIG ──
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8788253983:AAFAWRvDNcnUyEY2Wdt0PxT1IrhzBxJqWDI';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '5018438334';
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 async function sendTelegram(text) {
   try {
@@ -60,41 +60,26 @@ function removeHandoff(senderId) {
 }
 
 // ── ORDER DETECTION ──
-// Захиалга бүрэн болсон гэдгийг GPT хариултаас илрүүлнэ
-// System prompt-д "Таны захиалгыг хүлээн авлаа ✅" гэсэн текст байдаг тул үүнийг ашиглана
 function isOrderComplete(botReply) {
   return botReply.includes('Таны захиалгыг хүлээн авлаа ✅');
 }
 
-// Захиалгын мэдээллийг conversation history-с задлан гаргана
-function extractOrderInfo(senderId, history) {
-  // History-с сүүлийн 10 message-ийг шалгаж захиалгын мэдээллийг олно
-  const fullConv = history.map(m => `${m.role === 'user' ? '👤' : '🤖'}: ${m.content}`).join('\n');
-  return fullConv;
-}
-
 async function notifyTelegramOrder(senderId, history) {
-  // Conversation-с захиалгын мэдээллийг задлах
   const messages = history.slice(-16);
-  
-  // Хэрэглэгчийн мэдээллийг олох
-  let color = '—', qty = '—', address = '—', phone = '—', name = '—';
-  
+
+  let color = '—', qty = '—', address = '—', phone = '—';
+
   const fullText = messages.map(m => m.content).join(' ');
-  
-  // Өнгө
+
   const colorMatch = fullText.match(/(Pearl White|Slate Gray|Obsidian Black)/i);
   if (colorMatch) color = colorMatch[1];
-  
-  // Тоо ширхэг
+
   const qtyMatch = fullText.match(/(\d+)\s*(ширхэг|ш\.?)/i);
   if (qtyMatch) qty = qtyMatch[1] + ' ширхэг';
-  
-  // Утасны дугаар
+
   const phoneMatch = fullText.match(/(\d{8})/);
   if (phoneMatch) phone = phoneMatch[1];
-  
-  // Хаяг — хэрэглэгчийн сүүлийн урт message
+
   const userMessages = messages.filter(m => m.role === 'user');
   const longMsg = userMessages.find(m => m.content.length > 20 && /дүүрэг|хороо|байр|хотхон|гудамж/i.test(m.content));
   if (longMsg) address = longMsg.content;
@@ -130,9 +115,12 @@ async function notifyTelegramHandoff(senderId, userText) {
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна.
 
-━━ МЭНДЧИЛГЭЭ ━━
-Хэрэглэгч анх холбоо барьж ирвэл ингэж мэндэл (яаж байна гэж асуухгүй):
-"Сайн уу! ✨ Өнгө сонгоход тусалъя уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу?"
+━━ ЭХНИЙ МЕССЕЖ — GREETING HANDLER ━━
+Хэрэглэгч анх холбогдоход (сайн уу, hi, hello, мэнд, сайн байна уу, мэдээлэл авья, тавтай морил, юу вэ, танилцуулаач, байна уу гэх мэт) ЗААВАЛ дараах бүтэн текстийг ашигла:
+
+"269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт! Европын CE стандартаар үйлдвэрлэсэн — PP fiber, Carbon, KDF шүүлтүүр нь зэв, хлор, бактер, хүнд металлыг шүүж арьс үсийг хамгаална 💆 Pearl White, Obsidian Black, Slate Gray өнгөнүүдээс аль нэгийг авахад sponge + brush үнэгүй дагалдана 🎁 Та аль өнгийг сонирхож байна вэ?"
+
+Энэ текстийг ӨӨРЧЛӨХГҮЙ, нэмэхгүй, богиносгохгүй — ямар ч мэндчилгээний мессежид яг ийм л явуул.
 
 ━━ БҮТЭЭГДЭХҮҮН ━━
 • Pearl White 3-в-1: шүршүүр + filter + sponge + brush — 199,900₮ (269,000₮-с хямдарсан)
@@ -149,22 +137,25 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ━━ ТЕХНИКИЙН МЭДЭЭЛЭЛ ━━
 • Filter давхрага (доороос дээш): PP fiber (цагаан) → Carbon (хар) → KDF (металл)
-• Хлор, хүнд металл, бохирдлыг шүүж арьс, үсийг хамгаална
+• Хлор, хүнд металл, зэв, бактерийг шүүж арьс, үсийг хамгаална
 • Ceramic БИШ — энэ үгийг хэзээ ч хэлэхгүй
 • Нэг л горим: өндөр даралт, spa мэдрэмж, 40% ус хэмнэнэ
 • Rain/massage/mist mode гэж байхгүй
-• Усны даралт: 0.1-0.35 MPa
+• Усны даралт: 0.1-0.35 MPa (стандарт орон сууцны даралттай нийцдэг, энгийн шүршүүрээс илүү өндөр даралттай усны гаралт)
 • Ажлын температур: 0-70°C
-• Суурилуулалт: стандарт 1/2 инч ороомогтой бүх шүршүүрийн хоолойнд таарна
+• Суурилуулалт: стандарт 1/2 инч ороомогтой бүх шүршүүрийн хоолойнд таарна — тусгай багаж хэрэггүй, 1 минутад суурилна 🔧
 
 ━━ ШҮҮЛТҮҮРИЙН МЭДЭЭЛЭЛ ━━
+• Шүршүүр дотор 1 ширхэг шүүлтүүр суурилсан байгаа — ЗӨВХӨН ТЭР 1 ШИРХЭГ дагалдана
+• Запас шүүлтүүр тусдаа — дагалддаггүй, тусдаа захиалах шаардлагатай
+• Хэрэглэгч "шүүлтүүр хэд дагалддаг вэ?" эсвэл "запас шүүлтүүр байна уу?" эсвэл "хэдэн шүүлтүүр орж ирэх вэ?" гэвэл ЗААВАЛ ингэж хариул:
+  "Шүршүүр дотор 1 ширхэг шүүлтүүр суурилсан байгаа — тэр 1 ширхэг дагалдана 🌸 Запас шүүлтүүр хэрэгтэй бол тусдаа 29,900₮-аар авч болно"
 • 3-6 сард 1 удаа солих — 4 хүнтэй айлд 3 сар, 2 хүнтэй айлд 6 сар
-• Запас шүүлтүүр: 29,900₮ — skinbloom.store эсвэл манай Page-с захиална
 • Шүүлтүүр солих нь маш хялбар — гараараа салгаад шинийг суулгана
 
 ━━ БАТАЛГАА ━━
 • Үйлдвэрийн алдаатай бол 1 сарын дотор буцааж солино
-• Зөвхөн үйлдвэрийн алдаа хамаарна
+• Зөвхөн үйлдвэрийн алдаа хамаарна (хэрэглэгчийн гэмтээсэн тохиолдолд хамаарахгүй)
 • Гэмтэлтэй шүршүүр, brush, sponge бүгд солигдоно
 • Буцаах тохиолдолд зөвхөн шүршүүрийн толгойг буцаана
 
@@ -173,7 +164,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Хүргэлт (үнэгүй): УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
 • Төлбөр: Хаан банк — данс 5403645877 | IBAN: MN410005005403645877 | Хүлээн авагч: С.Цолмонбаатар
   Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү
-• Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS)
+• Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS — тухайн өдөртөө, орой 8 цагаас хойших захиалга маргааш өглөө)
 • Утас: 95999989
 
 ━━ ЗАХИАЛГА АВАХ ДАРААЛАЛ ━━
@@ -190,13 +181,15 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Шүршүүр: "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт үргэлжилж байгаа тул яараарай! 🌸"
 • Запас шүүлтүүр: "44,900₮-с хямдарч одоо 29,900₮ болсон 🔥"
 • Pearl White 3-в-1 багц: "Шүршүүр авахад sponge + brush үнэгүй дагалдаж ирнэ — нийт 3 бүтээгдэхүүн авсан хэрэг! 🎁"
+• Urgency: "Одоогийн үнээр авах боломж хязгаарлагдмал тул яаралтай захиалгаа өгөөрэй 🌸"
 
 ━━ ХЭРЭГЛЭГЧИЙН ӨНГӨ АЯС ТАНИХ ━━
 • Залуу/casual → найрсаг, хөнгөн, emoji ашигла
 • Албан ёсны → эелдэг, тодорхой
 • Богино асуулт → богино хариул
 • UGC/influencer → "Манай бүтээгдэхүүн фото/видео контентод маш сайн тохирно 📸 Та collaborator болох сонирхолтой байгаа бол манай баг тантай холбогдох болно 🌸 [HANDOFF_NEEDED]"
-• Эргэлзэж байгаа → итгэл төрүүлэх
+• Эргэлзэж байгаа → итгэл төрүүлэх (CE сертификат, 50 сая борлуулалт, баталгаа)
+• "багцаас нь авна" гэвэл Pearl White санал бол
 
 ━━ МЭДЭХГҮЙ ЗҮЙЛ ГАРВАЛ ━━
 "Манай баг таньтай эргэн холбогдох хүртэл түр хүлээнэ үү 🌸 [HANDOFF_NEEDED]"
@@ -206,6 +199,8 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • "Усанд орох" болон "шүршүүрт орох" хоёул зөв
 • "Шүршүүр хийх" гэж битгий хэл
 • Давтан асуувал шинэ мэдээлэл нэм
+• Хэрэглэгчийн үгийг хэзээ ч засаж сургахгүй
+• Гарал үүсэл: "Европын CE стандартаар Хонгконгт үйлдвэрлэгдэж, Европ Америкт 50 сая гаруй борлуулалттай. Бид шууд үйлдвэрээс албан ёсны эрхтэйгээр Монголд нийлүүлдэг 🌸"
 
 ЧУХАЛ: [HANDOFF_NEEDED] тэмдгийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
 
@@ -293,7 +288,6 @@ async function sendDM(recipientId, text) {
   }
 }
 
-// ── HUMAN AGENT TAG — 7 хоногийн цонх ──
 async function sendDMWithHumanAgent(recipientId, text) {
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
@@ -305,7 +299,6 @@ async function sendDMWithHumanAgent(recipientId, text) {
     console.log(`✓ Human Agent DM sent → ${recipientId}`);
   } catch (e) {
     console.error(`✗ Human Agent DM error:`, e.response?.data?.error?.message || e.message);
-    // Fallback — энгийн DM
     await sendDM(recipientId, text);
   }
 }
@@ -377,7 +370,7 @@ app.post('/webhook', async (req, res) => {
         if (['image', 'video', 'sticker'].includes(attType)) {
           const attUrl = attachments[0]?.payload?.url || '';
           const attContext = attType === 'image'
-            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Магадгүй бүтээгдэхүүний зураг харуулж захиалах гэсэн байж болно.]`
+            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Магадгүй бүтээгдэхүүний зураг харуулж захиалах гэсэн, угаалгын өрөөний зураг, эсвэл UGC creator байж болно. Зорилгыг ойлгож тохирсон хариулт өг.]`
             : `[Хэрэглэгч ${attType} илгээлээ. Юу хэрэгтэйг нь эелдэгээр асуу.]`;
           try {
             const reply = await askGPT_DM(senderId, attContext);
@@ -405,14 +398,12 @@ app.post('/webhook', async (req, res) => {
 
         await sendDM(senderId, cleanReply);
 
-        // ── ЗАХИАЛГА БҮРЭН БОЛСОН → Telegram ──
         if (isOrder) {
           console.log(`🛍 Order complete for [${senderId}]`);
           const history = getHistory(senderId);
           await notifyTelegramOrder(senderId, history);
         }
 
-        // ── HANDOFF → Telegram ──
         if (isHandoff) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
@@ -486,7 +477,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.4.0',
+  status: '🌸 SkinBloom Bot running', version: '2.5.0',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -513,7 +504,6 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🌸 SkinBloom Bot v2.4.0 listening on port ${PORT}`);
-  // Telegram test ping
-  sendTelegram('🌸 <b>SkinBloom Bot v2.4.0 асаалаа!</b>\n\nТelegram мэдэгдэл идэвхтэй байна ✅');
+  console.log(`🌸 SkinBloom Bot v2.5.0 listening on port ${PORT}`);
+  sendTelegram('🌸 <b>SkinBloom Bot v2.5.0 асаалаа!</b>\n\nTelegram мэдэгдэл идэвхтэй байна ✅');
 });

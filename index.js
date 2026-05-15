@@ -584,19 +584,23 @@ app.post('/webhook', async (req, res) => {
         const commentText = val.message;
         const commenterName = val.from?.name || '';
         const commenterId = val.from?.id;
-        const commentId = val.comment_id;
+
+        // private_replies endpoint-д val.comment_id-г тийм чигээрээ явуулна
+        // RAW жишээ: "122117817465276100_838200106012518"
+        const commentId = val.comment_id || '';
+        const rawCommentId = commentId;
 
         if (commenterId === pageId) continue;
         if (!commentText) continue;
         if (!commenterId) continue;
         if (!commentId) continue;
 
-        const dedupeKey = `fb_comment_${commentId}`;
+        const dedupeKey = `fb_comment_${rawCommentId}`;
         if (isDuplicate(dedupeKey)) continue;
 
         // comment болон reply хоёуланд нь private_replies-р DM явуулна
         const isReply = val.parent_id && val.parent_id !== val.post_id;
-        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}]: ${commentText.slice(0, 60)}`);
+        console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] id=${commentId}: ${commentText.slice(0, 60)}`);
         await sendDMToCommenter(commenterId, commenterName, commentText, commentId);
       }
     }
@@ -646,7 +650,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.6',
+  status: '🌸 SkinBloom Bot running', version: '2.5.7',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -673,7 +677,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.6 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.7 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.6 асаалаа!</b>\n\n✅ FB comment → private_replies DM (comment + reply хоёуланд)\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.7 асаалаа!</b>\n\n✅ FB comment → private_replies DM (comment + reply хоёуланд)\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

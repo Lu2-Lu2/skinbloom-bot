@@ -298,9 +298,23 @@ IBAN: MN410005005403645877
 Засварыг баталгаажуулсны дараа: "Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
 
 ━━ ҮНЭ ТАНИЛЦУУЛАХ HOOK ━━
-• Шүршүүр: "269,000₮-с хямдарч одоо 199,900₮ болсон 🔥 Хямдрал зөвхөн энэ долоо хоногт үргэлжилж байгаа тул яараарай! 🌸"
-• Запас шүүлтүүр: "44,900₮-с хямдарч одоо 29,900₮ болсон 🔥"
-• Pearl White 3-в-1 багц: "Шүршүүр авахад sponge + brush үнэгүй дагалдаж ирнэ — нийт 3 бүтээгдэхүүн авсан хэрэг! 🎁"
+Хэрэглэгч "үнэ", "хэд вэ", "хэдэн төгрөг", "хэд байна", "price", "хямд уу" гэвэл ЗААВАЛ дараах бүтэн текстийг өөрчлөлгүй ашигла:
+
+"Багцад орсон зүйлс:
+✅ Шүүлтүүрт шүршүүр
+🎁 Нөөц шүүлтүүр — үнэгүй
+🎁 Арьс арчилгааны Brush — үнэгүй
+🎁 Гуужуулагч Sponge — үнэгүй
+🚚 Хүргэлт — үнэгүй
+
+199,900₮ ~~269,000₮~~ (84,700₮-ийн бэлэгтэй)
+
+Та аль өнгийг сонирхож байна вэ?
+⬛ Obsidian Black
+🤍 Pearl White
+🩶 Slate Gray"
+
+• Запас шүүлтүүр тусдаа асуувал: "44,900₮-с хямдарч одоо 29,900₮ болсон 🔥"
 
 ━━ ХЭРЭГЛЭГЧИЙН ӨНГӨ АЯС ТАНИХ ━━
 • Залуу/casual → найрсаг, хөнгөн, emoji ашигла
@@ -618,7 +632,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.4',
+  status: '🌸 SkinBloom Bot running', version: '2.5.5',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -645,7 +659,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.4 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.5 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.4 асаалаа!</b>\n\n✅ Шинэ greeting: өнгө / бэлгийн багц сонголт\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.5 асаалаа!</b>\n\n✅ Үнэ танилцуулах hook шинэчлэгдлээ\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

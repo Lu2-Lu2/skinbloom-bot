@@ -439,8 +439,19 @@ async function sendDMWithHumanAgent(recipientId, text) {
   }
 }
 
-async function sendDMToCommenter(commenterId, commenterName, commentText) {
-  if (!commenterId) return;
+async function sendPrivateReply(commentId, text) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${commentId}/private_replies`,
+    { message: text },
+    { params: { access_token: PAGE_TOKEN } }
+  );
+}
+
+async function sendDMToCommenter(commenterId, commenterName, commentText, commentId) {
+  if (!commentId) {
+    console.log(`⚠️ No commentId — cannot send private reply to ${commenterName}`);
+    return;
+  }
   if (humanHandoff.has(commenterId)) {
     console.log(`⏭ Handoff — skip DM to ${commenterName}`);
     return;
@@ -448,10 +459,10 @@ async function sendDMToCommenter(commenterId, commenterName, commentText) {
   try {
     const dmText = await askGPT_CommentDM(commenterName, commentText);
     const cleanText = dmText.replace('[HANDOFF_NEEDED]', '').trim();
-    await sendDM(commenterId, cleanText);
-    console.log(`✓ Comment DM sent → ${commenterName}`);
+    await sendPrivateReply(commentId, cleanText);
+    console.log(`✓ Private reply DM sent → ${commenterName} (comment: ${commentId})`);
   } catch (e) {
-    console.error(`✗ Comment DM error:`, e.message);
+    console.error(`✗ Private reply error → ${commenterName}:`, e.response?.data?.error?.message || e.message);
   }
 }
 
@@ -573,17 +584,20 @@ app.post('/webhook', async (req, res) => {
         const commentText = val.message;
         const commenterName = val.from?.name || '';
         const commenterId = val.from?.id;
+        const commentId = val.comment_id;
 
         if (commenterId === pageId) continue;
         if (!commentText) continue;
         if (!commenterId) continue;
+        if (!commentId) continue;
 
-        const dedupeKey = `fb_comment_${val.comment_id}`;
+        const dedupeKey = `fb_comment_${commentId}`;
         if (isDuplicate(dedupeKey)) continue;
 
+        // comment болон reply хоёуланд нь private_replies-р DM явуулна
         const isReply = val.parent_id && val.parent_id !== val.post_id;
         console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}]: ${commentText.slice(0, 60)}`);
-        await sendDMToCommenter(commenterId, commenterName, commentText);
+        await sendDMToCommenter(commenterId, commenterName, commentText, commentId);
       }
     }
 
@@ -632,7 +646,7 @@ if (RENDER_URL) {
 }
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.5',
+  status: '🌸 SkinBloom Bot running', version: '2.5.6',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -659,7 +673,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.5 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.6 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.5 асаалаа!</b>\n\n✅ Үнэ танилцуулах hook шинэчлэгдлээ\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.6 асаалаа!</b>\n\n✅ FB comment → private_replies DM (comment + reply хоёуланд)\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

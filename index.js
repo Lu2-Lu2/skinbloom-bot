@@ -12,6 +12,8 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const AD_ACCOUNT_ID = process.env.AD_ACCOUNT_ID || 'act_1556768588735258';
+const GRAPH_BASE = 'https://graph.facebook.com/v19.0';
 
 // ── TELEGRAM CONFIG ──
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -496,7 +498,6 @@ app.post('/webhook', async (req, res) => {
   for (const entry of (body.entry || [])) {
     const pageId = entry.id;
 
-    // ── 1. MESSENGER / INSTAGRAM DM ──
     for (const event of (entry.messaging || [])) {
       if (event.message?.is_echo) continue;
       if (event.sender?.id === pageId) continue;
@@ -574,7 +575,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // ── 2. FACEBOOK FEED COMMENTS ──
     for (const change of (entry.changes || [])) {
       console.log(`📦 RAW: ${JSON.stringify(change).slice(0, 500)}`);
       if (change.field !== 'feed') continue;
@@ -584,9 +584,6 @@ app.post('/webhook', async (req, res) => {
         const commentText = val.message;
         const commenterName = val.from?.name || '';
         const commenterId = val.from?.id;
-
-        // private_replies endpoint-д val.comment_id-г тийм чигээрээ явуулна
-        // RAW жишээ: "122117817465276100_838200106012518"
         const commentId = val.comment_id || '';
         const rawCommentId = commentId;
 
@@ -598,14 +595,12 @@ app.post('/webhook', async (req, res) => {
         const dedupeKey = `fb_comment_${rawCommentId}`;
         if (isDuplicate(dedupeKey)) continue;
 
-        // comment болон reply хоёуланд нь private_replies-р DM явуулна
         const isReply = val.parent_id && val.parent_id !== val.post_id;
         console.log(`💬 FB ${isReply ? 'Reply' : 'Comment'} [${commenterName}] id=${commentId}: ${commentText.slice(0, 60)}`);
         await sendDMToCommenter(commenterId, commenterName, commentText, commentId);
       }
     }
 
-    // ── 3. INSTAGRAM COMMENTS ──
     for (const change of (entry.changes || [])) {
       if (change.field !== 'comments') continue;
       const val = change.value;
@@ -649,8 +644,184 @@ if (RENDER_URL) {
   }, 14 * 60 * 1000);
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// META ADS STATS ENDPOINT — Supermetrics/Motion орлох
+// GET /meta-stats?preset=last_7d&level=campaign
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function graphGet(path, params = {}) {
+  const url = new URL(`${GRAPH_BASE}${path}`);
+  url.searchParams.set('access_token', PAGE_TOKEN);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, v);
+  }
+  const res = await axios.get(url.toString());
+  return res.data;
+}
+
+function extractAction(actions, type) {
+  if (!actions) return 0;
+  const found = actions.find(a => a.action_type === type);
+  return found ? parseInt(found.value) : 0;
+}
+
+function extractCPA(cpaArr, type) {
+  if (!cpaArr) return null;
+  const found = cpaArr.find(a => a.action_type === type);
+  return found ? parseFloat(found.value).toFixed(2) : null;
+}
+
+function getUnixDaysAgo(days) {
+  return Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
+}
+
+function buildSummary(insights) {
+  if (!insights.length) return null;
+  let totalSpend = 0, totalImpressions = 0, totalClicks = 0;
+  let totalPurchases = 0, totalATC = 0, totalVC = 0, totalPurchaseValue = 0;
+
+  for (const row of insights) {
+    totalSpend += parseFloat(row.spend);
+    totalImpressions += parseInt(row.impressions.replace(/,/g, ''));
+    totalClicks += Math.round((parseFloat(row.ctr.replace('%', '')) / 100) * parseInt(row.impressions.replace(/,/g, '')));
+    totalPurchases += row.conversions.purchase;
+    totalATC += row.conversions.add_to_cart;
+    totalVC += row.conversions.view_content;
+    totalPurchaseValue += parseFloat(row.conversions.purchase_value || 0);
+  }
+
+  const avgCTR = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) + '%' : '—';
+  const roas = totalSpend > 0 && totalPurchaseValue > 0 ? (totalPurchaseValue / totalSpend).toFixed(2) + 'x' : '—';
+  const cpPurchase = totalPurchases > 0 ? '$' + (totalSpend / totalPurchases).toFixed(2) : '—';
+
+  return {
+    total_spend: '$' + totalSpend.toFixed(2),
+    total_impressions: totalImpressions.toLocaleString(),
+    avg_ctr: avgCTR,
+    total_purchases: totalPurchases,
+    total_add_to_cart: totalATC,
+    total_view_content: totalVC,
+    total_purchase_value: '$' + totalPurchaseValue.toFixed(2),
+    roas,
+    cost_per_purchase: cpPurchase,
+  };
+}
+
+app.get('/meta-stats', async (req, res) => {
+  try {
+    const preset = req.query.preset || 'last_7d';
+    const level = req.query.level || 'campaign';
+
+    const PRESET_MAP = {
+      today: 'today', yesterday: 'yesterday',
+      last_7d: 'last_7d', last_14d: 'last_14d',
+      last_30d: 'last_30d', this_month: 'this_month',
+    };
+    const datePreset = PRESET_MAP[preset] || 'last_7d';
+
+    const insightsFields = [
+      'campaign_name', 'adset_name', 'ad_name',
+      'impressions', 'reach', 'frequency',
+      'clicks', 'ctr', 'cpc', 'cpm', 'cpp', 'spend',
+      'actions', 'action_values', 'cost_per_action_type',
+      'video_play_actions', 'video_thruplay_watched_actions',
+    ].join(',');
+
+    const [insights, campaigns] = await Promise.all([
+      graphGet(`/${AD_ACCOUNT_ID}/insights`, {
+        fields: insightsFields,
+        date_preset: datePreset,
+        level,
+        limit: 50,
+      }),
+      graphGet(`/${AD_ACCOUNT_ID}/campaigns`, {
+        fields: 'id,name,status,objective,daily_budget,lifetime_budget',
+        limit: 20,
+      }),
+    ]);
+
+    let pixelEvents = null;
+    try {
+      const pixels = await graphGet(`/${AD_ACCOUNT_ID}/adspixels`, {
+        fields: 'id,name', limit: 5,
+      });
+      if (pixels.data && pixels.data.length > 0) {
+        const pixelId = pixels.data[0].id;
+        pixelEvents = await graphGet(`/${pixelId}/stats`, {
+          start_time: getUnixDaysAgo(7),
+          end_time: Math.floor(Date.now() / 1000),
+          aggregation: 'event',
+        });
+      }
+    } catch (pixelErr) {
+      pixelEvents = { error: pixelErr.response?.data?.error?.message || pixelErr.message };
+    }
+
+    let topAds = [];
+    try {
+      const adInsights = await graphGet(`/${AD_ACCOUNT_ID}/insights`, {
+        fields: 'ad_id,ad_name,impressions,clicks,ctr,spend,actions,cost_per_action_type',
+        date_preset: datePreset,
+        level: 'ad',
+        sort: 'clicks_descending',
+        limit: 10,
+      });
+      topAds = adInsights.data || [];
+    } catch (e) {}
+
+    const formattedInsights = (insights.data || []).map(row => {
+      const purchases = extractAction(row.actions, 'purchase');
+      const addToCart = extractAction(row.actions, 'add_to_cart');
+      const viewContent = extractAction(row.actions, 'view_content');
+      const initiateCheckout = extractAction(row.actions, 'initiate_checkout');
+      const purchaseValue = row.action_values?.find(a => a.action_type === 'purchase')?.value || 0;
+      const spend = parseFloat(row.spend || 0);
+      const roas = spend > 0 && purchaseValue > 0 ? (parseFloat(purchaseValue) / spend).toFixed(2) : null;
+
+      return {
+        name: row.campaign_name || row.adset_name || row.ad_name || '—',
+        spend: spend.toFixed(2),
+        impressions: parseInt(row.impressions || 0).toLocaleString(),
+        reach: parseInt(row.reach || 0).toLocaleString(),
+        frequency: parseFloat(row.frequency || 0).toFixed(2),
+        ctr: parseFloat(row.ctr || 0).toFixed(2) + '%',
+        cpc: row.cpc ? '$' + parseFloat(row.cpc).toFixed(2) : '—',
+        cpm: row.cpm ? '$' + parseFloat(row.cpm).toFixed(2) : '—',
+        conversions: { view_content: viewContent, add_to_cart: addToCart, initiate_checkout: initiateCheckout, purchase: purchases, purchase_value: purchaseValue },
+        roas: roas ? roas + 'x' : '—',
+        cost_per_purchase: extractCPA(row.cost_per_action_type, 'purchase') ? '$' + extractCPA(row.cost_per_action_type, 'purchase') : '—',
+      };
+    });
+
+    res.json({
+      ok: true,
+      generated_at: new Date().toISOString(),
+      date_preset: datePreset,
+      level,
+      summary: buildSummary(formattedInsights),
+      insights: formattedInsights,
+      campaigns: (campaigns.data || []).map(c => ({
+        id: c.id, name: c.name, status: c.status,
+        objective: c.objective,
+        daily_budget: c.daily_budget ? (parseInt(c.daily_budget) / 100).toFixed(2) : null,
+      })),
+      pixel_events: pixelEvents,
+      top_ads: topAds,
+    });
+
+  } catch (err) {
+    console.error('/meta-stats error:', err.response?.data || err.message);
+    res.status(500).json({
+      ok: false,
+      error: err.response?.data?.error?.message || err.message,
+    });
+  }
+});
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.7',
+  status: '🌸 SkinBloom Bot running', version: '2.5.8',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -677,7 +848,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.7 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.8 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.7 асаалаа!</b>\n\n✅ FB comment → private_replies DM (comment + reply хоёуланд)\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.8 асаалаа!</b>\n\n✅ /meta-stats endpoint нэмэгдлээ\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

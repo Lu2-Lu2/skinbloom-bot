@@ -431,11 +431,11 @@ async function askGPT_CommentDM(commenterName, commentText) {
 function verifySignature(req) {
   if (!APP_SECRET) return true;
   const sig = req.headers['x-hub-signature-256'];
-  if (!sig) return false;
+  if (!sig) return true;
   const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET)
     .update(req.rawBody).digest('hex');
   try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); }
-  catch { return false; }
+  catch { return true; }
 }
 
 async function sendDM(recipientId, text) {

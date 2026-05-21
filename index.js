@@ -142,6 +142,11 @@ function isOrderComplete(botReply) {
   return botReply.includes('Таны захиалгыг хүлээн авлаа ✅');
 }
 
+// ── COD ORDER DETECTION ──
+function isCODOrder(botReply) {
+  return botReply.includes('[COD_ORDER]');
+}
+
 const ORDER_EDIT_KEYWORDS = [
   'хаяг солих', 'хаяг өөрчлөх', 'хаяг засах', 'хаяг буруу',
   'утас солих', 'утас өөрчлөх', 'дугаар солих', 'дугаар буруу',
@@ -156,7 +161,7 @@ function isOrderEditRequest(text) {
   return ORDER_EDIT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-async function notifyTelegramOrder(senderId, history) {
+async function notifyTelegramOrder(senderId, history, isCOD = false) {
   const messages = history.slice(-16);
   let color = '—', qty = '—', address = '—', phone = '—';
   const fullText = messages.map(m => m.content).join(' ');
@@ -174,17 +179,21 @@ async function notifyTelegramOrder(senderId, history) {
   const longMsg = userMessages.find(m => m.content.length > 20 && /дүүрэг|хороо|байр|хотхон|гудамж/i.test(m.content));
   if (longMsg) address = longMsg.content;
 
-  const msg = `🛍 <b>ШИНЭ ЗАХИАЛГА!</b>
+  const paymentLine = isCOD
+    ? '💵 Төлбөр: <b>ЖОЛООЧИД БЭЛНЭЭР (COD)</b>'
+    : '🏦 Төлбөр хүлээгдэж байна';
+
+  const msg = `🛍 <b>ШИНЭ ЗАХИАЛГА${isCOD ? ' — COD' : ''}!</b>
 
 🎨 Өнгө: <b>${color}</b>
 📦 Тоо: <b>${qty}</b>
 📍 Хаяг: <b>${address}</b>
 📞 Утас: <b>${phone}</b>
+${paymentLine}
 
 👤 Messenger ID: <code>${senderId}</code>
 💬 Хариулах: https://m.me/${senderId}
 
-🏦 Төлбөр хүлээгдэж байна
 <i>Унтраах: <code>/release ${senderId}</code></i>`;
 
   await sendTelegram(msg);
@@ -286,10 +295,20 @@ CE гэрчилгээний дугаар: HX240303050484"
 ━━ ЗАХИАЛГЫН МЭДЭЭЛЭЛ ━━
 • Дэлгүүр: skinbloom.store
 • Хүргэлт (үнэгүй): УБ 24-48 цаг дотор, орон нутаг унаанд өгж явуулна
-• Төлбөр: Хаан банк — данс 5403645877 | IBAN: MN410005005403645877 | Хүлээн авагч: С.Цолмонбаатар
-  Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү
 • Шүүрхай хүргэлт: +20,000₮ нэмэлт (UBCAB EXPRESS — тухайн өдөртөө, орой 8 цагаас хойших захиалга маргааш өглөө)
 • Утас: 95999989
+
+━━ ТӨЛБӨРИЙН СОНГОЛТ ━━
+Захиалга авах үед хэрэглэгчээс ЗААВАЛ төлбөрийн аргыг асуу:
+
+"Төлбөрийг яаж хийх вэ?
+1️⃣ Урьдчилж банкаар шилжүүлэх
+2️⃣ Барааг авсны дараа жолоочид бэлнээр өгөх"
+
+• Хэрэглэгч 1 сонговол (урьдчилж төлөх):
+  → Захиалга баталгаажуулах МЕССЕЖ 1 + МЕССЕЖ 2 (банкны мэдээлэл) дараалан явуул
+• Хэрэглэгч 2 сонговол (авсны дараа бэлнээр):
+  → Захиалга баталгаажуулах МЕССЕЖ 1 + МЕССЕЖ 3 (COD) дараалан явуул
 
 ━━ ЗАХИАЛГА АВАХ ДАРААЛАЛ ━━
 Хэрэглэгч авна гэвэл ЭНЭ ДАРААЛЛААР мэдээллийг нэг нэгээр асуу:
@@ -298,19 +317,24 @@ CE гэрчилгээний дугаар: HX240303050484"
 3. Хаяг (дүүрэг, хороо, хотхон/байр/тоот/давхар)
 4. Орцны код (байгаа бол)
 5. Утасны дугаар
-→ Бүгд бүрэн болмогц ЗААВАЛ дараах 2 мессежийг дараалан явуул:
+6. Төлбөрийн арга (урьдчилж шилжүүлэх / авсны дараа бэлнээр)
 
-МЕССЕЖ 1:
+→ Бүгд бүрэн болмогц ЗААВАЛ дараах мессежүүдийг дараалан явуул:
+
+МЕССЕЖ 1 (бүх тохиолдолд):
 "Таны захиалгыг хүлээн авлаа ✅ Удахгүй холбогдох болно 🌸
 
 Таны захиалга баталгаажлаа. Таны хүргэлт 24-48 цагын дотор хаяг дээр хүргэгдэнэ. Манайхыг сонгосон танд баярлалаа 🌸"
 
-МЕССЕЖ 2 (дараа нь шууд):
+МЕССЕЖ 2 (зөвхөн урьдчилж шилжүүлэх үед):
 "Хаан банкны дансны мэдээлэл:
 Данс: 5403645877
 IBAN: MN410005005403645877
 Хүлээн авагч: С.Цолмонбаатар
 Гүйлгээний утга: Захиалагчийн нэр + утасны дугаар бичнэ үү."
+
+МЕССЕЖ 3 (зөвхөн авсны дараа бэлнээр үед):
+"Таны захиалга баталгаажлаа 🌸 Хүргэлтийн жолооч барааг хүргэх үед бэлнээр 199,900₮ төлнө үү. [COD_ORDER]"
 
 ━━ ЗАХИАЛГА БАТАЛГААЖСАНЫ ДАРАА ЗАСАХ ━━
 Захиалга баталгаажсаны дараа хэрэглэгч мэдээлэл засмаар байна гэвэл:
@@ -363,7 +387,7 @@ IBAN: MN410005005403645877
 • Давтан асуувал шинэ мэдээлэл нэм
 • Хэрэглэгчийн үгийг хэзээ ч засаж сургахгүй
 
-ЧУХАЛ: [HANDOFF_NEEDED] болон [ORDER_EDIT] тэмдгүүдийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
+ЧУХАЛ: [HANDOFF_NEEDED], [ORDER_EDIT], [COD_ORDER] тэмдгүүдийг хэрэглэгчид харуулахгүй, явуулахдаа УСТГА.`;
 
 const COMMENT_DM_PROMPT = `Та SkinBloom брэндийн AI туслах юм. Facebook/Instagram-д comment бичсэн хэрэглэгчид DM-ээр хариулна.
 
@@ -546,7 +570,7 @@ app.post('/webhook', async (req, res) => {
           try {
             const reply = await askGPT_DM(senderId, attContext);
             const isHandoff = shouldTriggerHandoff(reply);
-            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').trim();
+            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').replace('[COD_ORDER]', '').trim();
             await sendDM(senderId, cleanReply);
             if (isHandoff) {
               addHandoff(senderId);
@@ -571,21 +595,22 @@ app.post('/webhook', async (req, res) => {
         const reply = await askGPT_DM(senderId, text);
         const isHandoff = shouldTriggerHandoff(reply);
         const isOrder = isOrderComplete(reply);
+        const isCOD = isCODOrder(reply);
         const isOrderEdit = reply.includes('[ORDER_EDIT]') || isOrderEditRequest(text);
-        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').trim();
+        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').replace('[COD_ORDER]', '').trim();
 
         await sendDM(senderId, cleanReply);
 
-        if (isOrder) {
-          console.log(`🛍 Order complete [${senderId}]`);
-          await notifyTelegramOrder(senderId, getHistory(senderId));
+        if (isOrder || isCOD) {
+          console.log(`🛍 Order complete [${senderId}] COD=${isCOD}`);
+          await notifyTelegramOrder(senderId, getHistory(senderId), isCOD);
         }
 
-        if (isOrderEdit && !isOrder) {
+        if (isOrderEdit && !isOrder && !isCOD) {
           await notifyTelegramOrderEdit(senderId, text);
         }
 
-        if (isHandoff && !isOrder) {
+        if (isHandoff && !isOrder && !isCOD) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
           await notifyTelegramHandoff(senderId, text);
@@ -837,7 +862,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.5.8',
+  status: '🌸 SkinBloom Bot running', version: '2.5.9',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -864,7 +889,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.5.8 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.5.9 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.8 асаалаа!</b>\n\n✅ /meta-stats endpoint нэмэгдлээ\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.5.9 асаалаа!</b>\n\n✅ COD (авсны дараа бэлнээр) feature нэмэгдлээ\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
 });

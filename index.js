@@ -67,6 +67,114 @@ app.post('/telegram', async (req, res) => {
       await sendTelegram(`📋 <b>Handoff горимд байгаа хэрэглэгчид:</b>\n\n${list}`);
     }
   }
+
+  // ── /send <userId> <variantNumber> ── 3 хувилбараас сонгож илгээх
+  if (text.startsWith('/send')) {
+    const parts = text.trim().split(/\s+/);
+    const userId = parts[1];
+    const variantNum = parts[2];
+
+    if (!userId || !variantNum) {
+      await sendTelegram('⚠️ Формат: <code>/send [userId] [1|2|3]</code>\nЖишээ: <code>/send 24473552475676679 1</code>');
+      return;
+    }
+    if (!['1', '2', '3'].includes(variantNum)) {
+      await sendTelegram('⚠️ Variant дугаар 1, 2 эсвэл 3 байх ёстой.');
+      return;
+    }
+
+    const drafts = getDrafts(userId);
+    if (!drafts) {
+      await sendTelegram(`⚠️ <code>${userId}</code>-ын draft байхгүй (TTL 1 цаг).\nЭсвэл өөрөө бичих: <code>/dm ${userId} [мессеж]</code>`);
+      return;
+    }
+
+    const variant = drafts[`variant_${variantNum}`];
+    if (!variant || !variant.body) {
+      await sendTelegram(`⚠️ Variant ${variantNum} хоосон байна.`);
+      return;
+    }
+
+    try {
+      await sendDMWithHumanAgent(userId, variant.body);
+      await sendTelegram(`✅ <b>Илгээлээ!</b>\n\n👤 <code>${userId}</code>\n📝 Variant ${variantNum}: <i>${variant.label}</i>\n\n💬 Мессеж:\n<i>${variant.body.slice(0, 200)}${variant.body.length > 200 ? '...' : ''}</i>`);
+      // Draft used — remove from store
+      draftStore.delete(userId);
+    } catch (e) {
+      await sendTelegram(`✗ Илгээх алдаа: ${e.message}`);
+    }
+    return;
+  }
+
+  // ── /dm <userId> <message> ── Өөрийн бичсэн мессеж шууд илгээх
+  if (text.startsWith('/dm ')) {
+    const remaining = text.slice(4).trim();
+    const firstSpace = remaining.indexOf(' ');
+    if (firstSpace === -1) {
+      await sendTelegram('⚠️ Формат: <code>/dm [userId] [мессеж]</code>\nЖишээ: <code>/dm 24473552475676679 Сайн байна уу...</code>');
+      return;
+    }
+    const userId = remaining.slice(0, firstSpace);
+    const message = remaining.slice(firstSpace + 1).trim();
+
+    if (!userId || !message) {
+      await sendTelegram('⚠️ userId эсвэл мессеж дутуу байна.');
+      return;
+    }
+
+    try {
+      await sendDMWithHumanAgent(userId, message);
+      await sendTelegram(`✅ <b>Илгээлээ!</b>\n\n👤 <code>${userId}</code>\n💬 <i>${message.slice(0, 200)}${message.length > 200 ? '...' : ''}</i>`);
+    } catch (e) {
+      await sendTelegram(`✗ Илгээх алдаа: ${e.message}`);
+    }
+    return;
+  }
+
+  // ── /draft <userId> ── Тодорхой хэрэглэгчид draft дахин үүсгэх
+  if (text.startsWith('/draft')) {
+    const parts = text.trim().split(/\s+/);
+    const userId = parts[1];
+
+    if (!userId) {
+      await sendTelegram('⚠️ Формат: <code>/draft [userId]</code>\nЭнэ нь тухайн хэрэглэгчид 3 шинэ draft бэлдэнэ.');
+      return;
+    }
+
+    const history = getHistory(userId);
+    if (history.length === 0) {
+      await sendTelegram(`⚠️ <code>${userId}</code>-ын яриа байхгүй.`);
+      return;
+    }
+    const lastUserMsg = history.filter(m => m.role === 'user').slice(-1)[0];
+    if (!lastUserMsg) {
+      await sendTelegram(`⚠️ Хэрэглэгчийн мессеж олдсонгүй.`);
+      return;
+    }
+
+    await sendTelegram(`⏳ Draft бэлдэж байна...`);
+    await notifyTelegramComplaint(userId, lastUserMsg.content, history);
+    return;
+  }
+
+  // ── /help ──
+  if (text === '/help' || text === '/start') {
+    const helpMsg = `🌸 <b>SkinBloom Bot — Telegram командууд</b>
+
+<b>Handoff удирдлага:</b>
+<code>/list</code> — handoff горимд байгаа хүмүүс
+<code>/release [userId]</code> — handoff унтраах
+
+<b>Хэрэглэгчид мессеж илгээх:</b>
+<code>/send [userId] [1|2|3]</code> — Draft variant сонгож илгээх
+<code>/dm [userId] [text]</code> — Өөрийн бичсэн мессеж илгээх
+<code>/draft [userId]</code> — Шинэ 3 draft бэлдэх
+
+<b>Тусламж:</b>
+<code>/help</code> — энэ мессеж`;
+    await sendTelegram(helpMsg);
+    return;
+  }
 });
 
 const HANDOFF_FILE = path.join('/tmp', 'handoff.json');
@@ -125,6 +233,54 @@ function isUGCOrInfluencer(text) {
   return UGC_KEYWORDS.some(kw => lower.includes(kw));
 }
 
+// ── COMPLAINT DETECTION (хэрэглэгчийн санал гомдол) ──
+const COMPLAINT_KEYWORDS = [
+  // Direct гомдол
+  'гомдол', 'санал гомдол', 'gomdol',
+  // Буцаалт
+  'буцаах', 'буцаалт', 'буцааж өг', 'butsaah', 'butsaalt',
+  'мөнгөө буцааж', 'төлбөрөө буцааж',
+  // Чанарын асуудал
+  'эвдэрсэн', 'evdersen', 'evderhgui', 'муу чанартай',
+  'ажилахгүй', 'ажиллахгүй', 'azhilahgui', 'ажилгүй',
+  'хугарсан', 'hugarsan', 'эвдэрчихсэн',
+  // Сэтгэл хангалуун биш
+  'таалагдсангүй', 'taalagdsangui', 'taalagdahgui',
+  'сэтгэл хангалуун биш', 'дургуй', 'durgui',
+  // Буруу ирсэн
+  'буруу ирсэн', 'buruu irsen', 'өөр зүйл ирсэн',
+  'ялгаатай ирсэн', 'буруу хүргэгдсэн', 'буруу бүтээгдэхүүн',
+  // Confusion (post-аас)
+  'буруу ойлгосон', 'buruu oilgoson', 'iim gej bodoogui',
+  'ийм гэж бодоогүй', 'запас ирэх гэж бодсон',
+  'zapas irne gej bodson', 'iim bsiin', 'ирэх гэж бодсон',
+  'буруу мэдээлэл', 'buruu medeelel', 'хууртагдсан',
+  // Хариуцлага
+  'хариуцлага', 'хариуцлагатай', 'арга хэмжээ',
+  // Ирээгүй
+  'ирээгүй', 'iregui', 'хүргэгдээгүй', 'hurgegdeegui',
+  'хүлээж байна', 'huleej baina', 'хүргэлт удаан'
+];
+
+function isComplaint(text) {
+  const lower = text.toLowerCase();
+  return COMPLAINT_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ── ADMIN/OPERATOR DETECTION (Page side-аас echo event) ──
+// Энд "manager", "менежер" гэх мэт үг бичигдсэн бол owner гар хүргэхээр оров гэж танина
+const ADMIN_HANDOFF_KEYWORDS = [
+  'manager', 'менежер', 'manai bag', 'манай баг',
+  'manai bagas', 'манайхаас', 'тантай холбогдох',
+  'эргэн холбогдох', 'удахгүй холбогдох'
+];
+
+function isAdminTakeover(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return ADMIN_HANDOFF_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+}
+
 async function notifyTelegramUGC(senderId, userText) {
   const msg = `📸 <b>UGC / INFLUENCER хүсэлт!</b>
 
@@ -134,6 +290,157 @@ async function notifyTelegramUGC(senderId, userText) {
 👉 Хариулах: https://m.me/${senderId}
 
 <i>Контент хийх сонирхолтой хэрэглэгч байна.</i>`;
+  await sendTelegram(msg);
+}
+
+// ── DRAFT VARIANTS GENERATOR (Owner-руу 3 хувилбар санал болгох) ──
+// GPT-аар тухайн хэрэглэгчийн context-д тохирсон 3 өөр strategy-ийн мессеж бэлдэнэ
+async function generateDraftVariants(senderId, userText, history) {
+  const recentMessages = history.slice(-8).map(m =>
+    `${m.role === 'user' ? 'Хэрэглэгч' : 'Bot'}: ${m.content}`
+  ).join('\n');
+
+  const draftPrompt = `Та SkinBloom брэндийн customer service менежер. Хэрэглэгч санал гомдол мэдүүлсэн.
+
+ХЭРЭГЛЭГЧИЙН СҮҮЛИЙН МЕССЕЖ:
+"${userText}"
+
+СҮҮЛИЙН ЯРИАНЫ КОНТЕКСТ:
+${recentMessages || '(контекст байхгүй — анхны мессеж)'}
+
+ЭНЭ ХЭРЭГЛЭГЧИД ИЛГЭЭХ 3 ӨӨР СТРАТЕГИЙН МЕССЕЖ БЭЛД:
+
+Variant 1: EMPATHY + RECOVERY OFFER (өршөөл хүсч, нөхөн төлбөрт зөвхөн SkinBloom-аас voucher эсвэл үнэгүй filter санал)
+Variant 2: DIRECT FIX — SHORT (богино, шууд хариулт + tactical solution)
+Variant 3: ESCALATE — буцаах/цуцлах сонголтыг өгөх
+
+ДҮРЭМ:
+- Монгол хэлээр бичих
+- Эхлэхдээ "Сайн байна уу [нэр]?" эсвэл "Сайн байна уу?" гэж хандана
+- 199'900₮ хэлбэрийн apostrophe ашиглах
+- "Pearl White 3-в-1", "ceramic", "Dyson", "Loofah", "Peeling", "Массажны", "Нэмэлт шүүлтүүр" — эдгээр үг бичихгүй
+- Холбоо: 95999989
+- Хариуцлагатай, дулаан tone
+- Богино, mobile дээр уншигдахаар (5-10 мөрөөс ихгүй)
+
+JSON форматаар хариул:
+{
+  "variant_1": {"label": "Empathy + recovery", "body": "..."},
+  "variant_2": {"label": "Direct fix", "body": "..."},
+  "variant_3": {"label": "Escalate", "body": "..."}
+}
+
+Зөвхөн JSON-ийг буцаа, өөр текст бичихгүй.`;
+
+  try {
+    const res = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: draftPrompt }],
+      temperature: 0.7,
+      max_tokens: 1500,
+      response_format: { type: 'json_object' }
+    }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
+
+    const json = JSON.parse(res.data.choices[0].message.content);
+    return json;
+  } catch (e) {
+    console.error('Draft variants error:', e.message);
+    return null;
+  }
+}
+
+// ── DRAFT VARIANTS STORE (Telegram → reply mapping) ──
+// Owner Telegram-аас /send 1 эсвэл /send 2 командаар сонгоход
+// тухайн userId-руу variant_N-ийн body илгээнэ
+const draftStore = new Map(); // userId → { variants: {1, 2, 3}, expiresAt }
+const DRAFT_TTL = 60 * 60 * 1000; // 1 цаг
+
+function saveDrafts(userId, variants) {
+  draftStore.set(userId, {
+    variants,
+    expiresAt: Date.now() + DRAFT_TTL
+  });
+  // Cleanup expired
+  for (const [id, d] of draftStore) {
+    if (d.expiresAt < Date.now()) draftStore.delete(id);
+  }
+}
+
+function getDrafts(userId) {
+  const d = draftStore.get(userId);
+  if (!d || d.expiresAt < Date.now()) {
+    draftStore.delete(userId);
+    return null;
+  }
+  return d.variants;
+}
+
+// ── COMPLAINT TELEGRAM ALERT + DRAFT SUGGESTION ──
+async function notifyTelegramComplaint(senderId, userText, history) {
+  // 1) Initial alert
+  const alertMsg = `🚨 <b>САНАЛ ГОМДОЛ — Яаралтай!</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Мессеж: <b>${userText}</b>
+
+👉 Хариулах: https://m.me/${senderId}
+
+<i>Bot хариулсангүй — handoff горимд оруулав.
+Доор 3 draft хувилбар бэлдэж байна...</i>`;
+  await sendTelegram(alertMsg);
+
+  // 2) Generate 3 draft variants
+  const drafts = await generateDraftVariants(senderId, userText, history);
+  if (!drafts) {
+    await sendTelegram(`⚠️ Draft бэлдэх алдаа гарлаа. Гар хариулна уу: https://m.me/${senderId}`);
+    return;
+  }
+
+  // 3) Save drafts for /send command
+  saveDrafts(senderId, drafts);
+
+  // 4) Send 3 variants as separate messages
+  const v1 = drafts.variant_1 || {};
+  const v2 = drafts.variant_2 || {};
+  const v3 = drafts.variant_3 || {};
+
+  const draftMsg = `📝 <b>3 хувилбарт мессеж:</b>
+
+━━━━━━━━━━━━━━━━━━
+<b>1️⃣ ${v1.label || 'Empathy'}</b>
+<i>${v1.body || '(хоосон)'}</i>
+
+━━━━━━━━━━━━━━━━━━
+<b>2️⃣ ${v2.label || 'Direct fix'}</b>
+<i>${v2.body || '(хоосон)'}</i>
+
+━━━━━━━━━━━━━━━━━━
+<b>3️⃣ ${v3.label || 'Escalate'}</b>
+<i>${v3.body || '(хоосон)'}</i>
+
+━━━━━━━━━━━━━━━━━━
+
+✅ <b>Сонгох:</b>
+<code>/send ${senderId} 1</code> — Variant 1 илгээх
+<code>/send ${senderId} 2</code> — Variant 2 илгээх
+<code>/send ${senderId} 3</code> — Variant 3 илгээх
+
+✏️ <b>Өөрийн мессеж:</b>
+<code>/dm ${senderId} [таны бичих мессеж]</code>`;
+
+  await sendTelegram(draftMsg);
+}
+
+// ── ADMIN TAKEOVER NOTIFY (Owner Page-аас Manager гэж бичсэн үед) ──
+async function notifyTelegramAdminTakeover(senderId, adminText) {
+  const msg = `🤝 <b>ADMIN TAKEOVER илрэв</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Та бичсэн: "${adminText.slice(0, 100)}${adminText.length > 100 ? '...' : ''}"
+
+✅ Bot автоматаар handoff горимд оруулав — энэ хэрэглэгчтэй цаашид Bot хариулахгүй.
+
+<i>Bot-ийг буцаан асаах: <code>/release ${senderId}</code></i>`;
   await sendTelegram(msg);
 }
 
@@ -223,7 +530,12 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
-// SYSTEM PROMPT v2.6.0 — 2026.05.25
+// SYSTEM PROMPT v2.7.0 — 2026.05.25
+// v2.6.1 → v2.7.0 fixes:
+// • Complaint detection — гомдол үг ороход автомат handoff + Telegram alert
+// • Admin takeover detect — Owner "Manager/менежер" гэж бичихэд автомат handoff
+// • Draft variants generator — 3 хувилбарт мессеж Telegram-руу
+// • /send, /dm, /draft, /help командууд нэмэгдсэн
 // Засагдсан: intent detection, үнэ format, filter vs bundle split,
 // storepay alternatives, story/UGC handler, missing field detection,
 // "Pearl White 3-в-1" буруу framing устгасан
@@ -247,8 +559,17 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   → Бэлгийн Багц 199'900₮ flow руу
 
 ▸ ШҮҮЛТҮҮР / FILTER авах гэж байгаа:
-  Keyword: "шүүлтүүр захиалъя", "шүүлтүүр авъя", "filter avya", "zapas", "запас", "нөөц шүүлтүүр", "карбон филтер захиалъя", "пилтер захиалъя"
-  → ЗӨВХӨН 29'900₮ запас filter flow — Bundle ОГТХОН ЧА санал болгохгүй
+  Keyword: "шүүлтүүр захиалъя", "шүүлтүүр авъя", "filter avya", "zapas", "запас", "нөөц шүүлтүүр", "карбон филтер захиалъя", "пилтер захиалъя", "пилтер", "pilter", "filtr"
+  → ЗӨВХӨН 29'900₮ запас filter flow
+  → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ
+  → "шүршүүр авах уу, filter авах уу?" гэж АСУУХГҮЙ — хэрэглэгч filter л хүссэн
+
+▸ POST-ИЙН CONFUSION — "ирээгүй", "ийм гэж бодоогүй", "буруу ойлгосон":
+  Keyword: "запас ирнэ гэж бодсон", "шүүлтүүр ирэх ёстой", "буруу ойлгосон", "ийм байсангүй", "vasiin zapas", "iim bsiin", "өөр зүйл захиалсан"
+  → Хэрэглэгч аль хэдийн захиалга өгсөн boловч confused байна
+  → Эхлээд UYAН зөвшөөрөл: "Уучлаарай, ойлголтын зөрүү гарсан байна"
+  → Дараа нь хүний оператор руу шилжүүлэх: [HANDOFF_NEEDED]
+  → ШУУД шинэ захиалга авч эхлэхгүй — context-ийг ойлгох
 
 ▸ МЭДЭЭЛЭЛ / ҮНЭ хайж байгаа:
   Keyword: "үнэ", "хэд", "хэдэн төгрөг", "price", "юу вэ", "ямар юм бэ"
@@ -504,7 +825,7 @@ async function askGPT_DM(senderId, userText) {
     ...getHistory(senderId).slice(-MAX_HISTORY)
   ];
   const res = await axios.post('https://api.openai.com/v1/chat/completions', {
-    model: 'gpt-4o-mini', messages, temperature: 0.6, max_tokens: 350
+    model: 'gpt-4o-mini', messages, temperature: 0.5, max_tokens: 500
   }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
   const reply = res.data.choices[0].message.content.trim();
   addToHistory(senderId, 'assistant', reply);
@@ -618,7 +939,23 @@ app.post('/webhook', async (req, res) => {
     const pageId = entry.id;
 
     for (const event of (entry.messaging || [])) {
-      if (event.message?.is_echo) continue;
+      // ── ADMIN/PAGE TAKEOVER DETECT (echo event) ──
+      // Page-аас хэрэглэгч рүү мессеж явахад echo гэж тэмдэглэгдэнэ.
+      // Хэрэв тэр мессеж "manager", "менежер" гэх admin keyword агуулбал
+      // тухайн хэрэглэгчийг автомат handoff болгоно.
+      if (event.message?.is_echo) {
+        const echoText = event.message?.text || '';
+        const recipientId = event.recipient?.id;
+        // Echo дотор recipient нь target хэрэглэгч, sender нь page
+        if (recipientId && recipientId !== pageId && isAdminTakeover(echoText)) {
+          if (!humanHandoff.has(recipientId)) {
+            addHandoff(recipientId);
+            console.log(`🤝 Admin takeover [${recipientId}] — page-аас "${echoText.slice(0, 40)}..."`);
+            await notifyTelegramAdminTakeover(recipientId, echoText);
+          }
+        }
+        continue;
+      }
       if (event.sender?.id === pageId) continue;
       const mid = event.message?.mid;
       if (mid && isDuplicate(mid)) continue;
@@ -656,6 +993,20 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (!text) continue;
+
+      // ── COMPLAINT DETECTION — ХАМГИЙН ӨНДӨР ПРИОРИТЕТ ──
+      // Хэрэглэгч санал гомдол мэдүүлбэл Bot хариулахгүй, шууд handoff + Telegram-руу 3 draft
+      if (isComplaint(text)) {
+        console.log(`🚨 Complaint detected [${senderId}]: ${text.slice(0, 60)}`);
+        addHandoff(senderId);
+        // Хэрэглэгчид холбогдох мэдэгдэл явуулна
+        await sendDMWithHumanAgent(senderId, '🌸 Таны мессежийг хүлээн авлаа. Манай менежер хариуцлагатайгаар тантай удахгүй холбогдох болно.');
+        // Тухайн user-ын яриаг history-д бүртгэх (draft generation-д хэрэглэх)
+        addToHistory(senderId, 'user', text);
+        // Telegram-руу 3 draft variant санал
+        await notifyTelegramComplaint(senderId, text, getHistory(senderId));
+        continue;
+      }
 
       if (isUGCOrInfluencer(text)) {
         console.log(`📸 UGC/Influencer detected [${senderId}]`);
@@ -934,7 +1285,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.6.0',
+  status: '🌸 SkinBloom Bot running', version: '2.7.0',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -961,7 +1312,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.6.0 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.7.0 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.6.0 асаалаа!</b>\n\n✅ Intent detection сайжирсан (filter vs bundle)\n✅ Үнэ format: 199\'900₮\n✅ Storepay alternatives нэмэгдсэн\n✅ UGC/Story mention handler\n✅ Missing field detection\n\n<b>Командууд:</b>\n<code>/release [userId]</code> — handoff унтраах\n<code>/list</code> — жагсаалт харах');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.7.0 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

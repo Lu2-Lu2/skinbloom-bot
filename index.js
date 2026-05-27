@@ -206,7 +206,191 @@ function removeHandoff(senderId) {
   saveHandoff(humanHandoff);
 }
 
-// ── HANDOFF DETECTION ──
+// ── ACTIVE ORDERS STATE (NEW v2.8.0) ──
+// senderId → { color, qty, address, entranceCode, phone, payment, total, placedAt, status }
+// status: 'collecting' | 'placed' | 'edit_pending' | 'cancel_reason_pending' | 'cancelled'
+const ACTIVE_ORDERS_FILE = path.join('/tmp', 'active_orders.json');
+const activeOrders = new Map();
+
+function loadActiveOrders() {
+  try {
+    if (fs.existsSync(ACTIVE_ORDERS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ACTIVE_ORDERS_FILE, 'utf8'));
+      data.forEach(([k, v]) => activeOrders.set(k, v));
+    }
+  } catch (e) { console.error('Active orders load error:', e.message); }
+}
+
+function saveActiveOrders() {
+  try { fs.writeFileSync(ACTIVE_ORDERS_FILE, JSON.stringify([...activeOrders])); }
+  catch (e) { console.error('Active orders save error:', e.message); }
+}
+
+function setOrder(senderId, order) {
+  activeOrders.set(senderId, { ...order, updatedAt: Date.now() });
+  saveActiveOrders();
+}
+
+function getOrder(senderId) {
+  return activeOrders.get(senderId);
+}
+
+function clearOrder(senderId) {
+  activeOrders.delete(senderId);
+  saveActiveOrders();
+}
+
+loadActiveOrders();
+
+// ── GREETING ANTI-REPEAT (NEW v2.8.0) ──
+const greetingTimestamps = new Map(); // senderId → timestamp
+const GREETING_COOLDOWN_MS = 5 * 60 * 1000;
+
+function hasRecentGreeting(senderId) {
+  const ts = greetingTimestamps.get(senderId);
+  return ts && (Date.now() - ts) < GREETING_COOLDOWN_MS;
+}
+
+function markGreeting(senderId) {
+  greetingTimestamps.set(senderId, Date.now());
+}
+
+// ── ATTACHMENT DEDUPE (NEW v2.8.0) ──
+const attachmentTimestamps = new Map(); // senderId → timestamp
+const ATTACHMENT_COOLDOWN_MS = 30 * 1000;
+
+function isDuplicateAttachment(senderId) {
+  const ts = attachmentTimestamps.get(senderId);
+  if (ts && (Date.now() - ts) < ATTACHMENT_COOLDOWN_MS) return true;
+  attachmentTimestamps.set(senderId, Date.now());
+  return false;
+}
+
+// ── ORDER ID GENERATOR (NEW v2.8.0) ──
+function generateOrderId() {
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const rand = Math.floor(Math.random() * 900 + 100);
+  return `SB-${ymd}-${rand}`;
+}
+
+// ── PHONE EXTRACTION & VALIDATION (NEW v2.8.0) ──
+function extractPhone(text) {
+  if (!text) return null;
+  // +976 prefix-ийг арилгана
+  const normalized = text.replace(/\+?976/g, ' ');
+  // Бие даасан 8-оронтой тоо хайх (boundary-той)
+  const matches = normalized.match(/(?:^|[^\d])(\d{8})(?:[^\d]|$)/g);
+  if (!matches) return null;
+  for (const m of matches) {
+    const num = m.match(/(\d{8})/)[1];
+    const firstDigit = num[0];
+    // Монголын mobile/landline эхний орон: 5, 7, 8, 9
+    if (['5', '7', '8', '9'].includes(firstDigit)) {
+      return num;
+    }
+  }
+  return null;
+}
+
+// ── ADDRESS DETECTION & SCORING (NEW v2.8.0) ──
+const DISTRICT_CODES = ['бзд', 'бгд', 'сбд', 'худ', 'чд', 'схд', 'нд', 'shd', 'bzd', 'bgd', 'sbd', 'khud', 'chd', 'skhd', 'nd', 'shd'];
+const DISTRICT_FULL = ['баянзүрх', 'баянгол', 'сүхбаатар', 'хан-уул', 'чингэлтэй', 'сонгинохайрхан', 'налайх', 'багахангай', 'багануур'];
+const ADDRESS_MARKERS = ['хороо', 'хороолол', 'байр', 'тоот', 'хотхон', 'гудамж', 'давхар', 'apartment', 'apt', 'building', 'street', 'khoroo', 'baig', 'bair', 'toot', 'hothon', 'davhar', 'gudamj', 'horoolol'];
+
+function scoreAddress(text) {
+  if (!text) return 0;
+  const lower = text.toLowerCase();
+  let score = 0;
+  if (DISTRICT_CODES.some(d => lower.includes(d))) score += 2;
+  if (DISTRICT_FULL.some(d => lower.includes(d))) score += 2;
+  const markersFound = ADDRESS_MARKERS.filter(m => lower.includes(m)).length;
+  score += markersFound;
+  // Дугаартай тоо (тоот дугаар, давхар, байр гэх мэт)
+  const digits = (lower.match(/\d+/g) || []).length;
+  if (digits >= 2) score += 1;
+  return score;
+}
+
+function looksLikeAddress(text) {
+  if (!text || text.trim().length < 6) return false;
+  return scoreAddress(text) >= 2;
+}
+
+// ── BATCH ORDER PARSE (NEW v2.8.0) ──
+// Хэрэглэгч нэг мессеж дотор олон slot өгсөн үед бүгдийг ялган авна
+function parseOrderSlots(text, existing = {}) {
+  const result = { ...existing };
+  if (!text) return result;
+  const lower = text.toLowerCase();
+
+  // Color
+  if (!result.color) {
+    if (/pearl\s*white|цагаан|tsagaan|tsagan|tagaan/i.test(text)) result.color = 'Pearl White';
+    else if (/slate\s*gray|saaral|саарал|саарл/i.test(text)) result.color = 'Slate Gray';
+    else if (/obsidian|black|хар|har\b|kar\b/i.test(text)) result.color = 'Obsidian Black';
+  }
+
+  // Qty
+  if (!result.qty) {
+    const qtyMatch = lower.match(/(\d+)\s*(ширхэг|ш\.?|piece|pcs|x)/i);
+    if (qtyMatch) result.qty = parseInt(qtyMatch[1], 10);
+  }
+  // "X1", "x2" гэх формат
+  if (!result.qty) {
+    const xMatch = text.match(/[xX×](\d+)/);
+    if (xMatch) result.qty = parseInt(xMatch[1], 10);
+  }
+
+  // Phone
+  if (!result.phone) {
+    const ph = extractPhone(text);
+    if (ph) result.phone = ph;
+  }
+
+  // Entrance code: "орцны код 3333", "ortsnii kod 3333#", "код: 3333"
+  if (!result.entranceCode) {
+    const codeMatch = text.match(/(?:орцны\s*код|ortsnii\s*kod|орц[нии]*\s*код|код|code)[:\s#]*(\d{2,6})/i);
+    if (codeMatch) result.entranceCode = codeMatch[1];
+  }
+
+  // Payment
+  if (!result.payment) {
+    if (/жолооч|joloochid|joloch|joloochi|cod|бэлнээр|belneer|belnerr|авсны дараа|avsny daraa/i.test(lower)) {
+      result.payment = 'COD';
+    } else if (/банк|bank|урьдчилж|urdjilj|шилжүүл|shiljuule/i.test(lower)) {
+      result.payment = 'BANK';
+    }
+  }
+
+  // Address: longest "address-looking" line
+  if (!result.address) {
+    const lines = text.split(/\n|[,;]/).map(s => s.trim()).filter(Boolean);
+    let bestLine = null;
+    let bestScore = 0;
+    for (const line of lines) {
+      const sc = scoreAddress(line);
+      if (sc > bestScore && line.length >= 8) {
+        bestScore = sc;
+        bestLine = line;
+      }
+    }
+    // Бүтэн message тэр чигтээ address байж болзошгүй
+    const fullScore = scoreAddress(text);
+    if (fullScore > bestScore && text.length >= 8 && text.length <= 250) {
+      bestLine = text.trim();
+      bestScore = fullScore;
+    }
+    if (bestLine && bestScore >= 2) {
+      // Phone-ыг arilgah
+      result.address = bestLine.replace(/(?:^|[^\d])(\d{8})(?:[^\d]|$)/g, ' ').trim();
+    }
+  }
+
+  return result;
+}
+
+// ── HANDOFF DETECTION (Bot reply-аас trigger) ──
 const HANDOFF_KEYWORDS = [
   'манай баг', 'эргэн холбогдох', 'түр хүлээ',
   'удахгүй холбогдох', 'менежер', 'холбогдох болно',
@@ -217,6 +401,133 @@ function shouldTriggerHandoff(reply) {
   if (reply.includes('[HANDOFF_NEEDED]')) return true;
   const lower = reply.toLowerCase();
   return HANDOFF_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+}
+
+// ── USER-INITIATED HANDOFF DETECTION (NEW v2.8.0) ──
+// Хэрэглэгч өөрөө хүн/менежер хүсэх, очиж үзэх, дэлгүүр визит хүсэх үг
+const USER_HANDOFF_REQUEST_KEYWORDS = [
+  // Хүн руу шилжүүлэх
+  'хүнтэй ярих', 'hunteh yarih', 'huntei yarih', 'оператор', 'operator',
+  'ажилтан', 'azhiltan', 'ажилчин', 'менежер', 'menezher', 'manager',
+  'жинхэнэ хүн', 'real person', 'live agent', 'live person',
+  // Очиж үзэх / бодит дэлгүүр
+  'очиж', 'ochih', 'ochmoor', 'ochmor', 'очмоор', 'ochij vzmeer',
+  'очиж үзэх', 'очиж үзмээр', 'очиж харах', 'нүдээр харах', 'nudeer harah',
+  'газар дээр нь', 'gazar deer', 'дэлгүүр очих', 'delguur ochih',
+  'агуулах очих', 'ageulah', 'офис очих', 'office очих',
+  'хаашаа очих', 'хаана байр', 'хаанаа байг', 'хаана байш', 'bairshil',
+  'байршил', 'байрлал', 'хаягаа хэлээч',
+  // Direct human request
+  'human', 'manai bag', 'manai baig', 'таны баг', 'tani bag',
+  'bag tanij', 'bag tanij ognoroi'
+];
+
+function isUserHandoffRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return USER_HANDOFF_REQUEST_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ── CANCELLATION DETECTION (NEW v2.8.0) ──
+const CANCELLATION_KEYWORDS = [
+  // Direct cancellation — root "цуцл" гэж эхэлсэн бүх үг
+  'цуцл', 'tsutsl', 'tsutsal', 'цуцал',
+  'захиалга цуцл', 'захиалгаа цуцл', 'захиалгаа боли',
+  'болих', 'bolih', 'болисон', 'болилоо', 'bolisuun', 'болиё', 'болио',
+  // Indirect
+  'битгий илгээ', 'битгий явуул', 'битгий ил', 'битгий ирүүл',
+  'хэрэггүй', 'kheregguy', 'kheregui', 'хэрэг алга', 'kherg alga',
+  'авахгүй', 'аваагүй', 'avahgui', 'avaagui',
+  'хүсэхгүй', 'huseh gui',
+  // Past-tense (хэрэглэгчийн ёжтой acknowledgment)
+  'ойлголоо', 'цуцлагдсан', 'tsutslagdsan', 'цуцлагдлаа',
+  // English
+  'cancel', 'canceled', 'cancelled', 'cancelation', 'cancellation'
+];
+
+function isCancellationRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  // "цуцлагдсан" гэх past-tense үг хэрэглэгч bot-д хэлэх үед бас trigger хийх
+  return CANCELLATION_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ── PROVINCE / OUT-OF-UB DELIVERY DETECTION (NEW v2.8.0) ──
+const PROVINCE_KEYWORDS = [
+  'дархан', 'darhan', 'darkhan',
+  'эрдэнэт', 'erdenet',
+  'чойбалсан', 'choibalsan', 'choibals',
+  'мөрөн', 'moron', 'muren',
+  'улаангом', 'ulaangom',
+  'арвайхээр', 'arvaiheer',
+  'сүхбаатар', 'sukhbaatar', 'suhbaatar',
+  'баянхонгор', 'bayankhongor', 'bayanhongor',
+  'булган', 'bulgan',
+  'говь-алтай', 'gobi altai', 'altai',
+  'сайншанд', 'sainshand',
+  'зуунмод', 'zuunmod',
+  'аймаг', 'aimag', 'aymag',
+  'хөдөө', 'khudoo', 'hudoo',
+  'oron nutag', 'орон нутаг'
+];
+
+function isProvinceDelivery(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  // Орон нутгийн нэр илрүүлэх (хатуу word boundary үгүйгээр ч ажиллах)
+  return PROVINCE_KEYWORDS.some(kw => {
+    // "darkhan" нь "darkhanchuud" гэх мэт үгэнд орохгүй гэдгийг шалгахын тулд boundary
+    const re = new RegExp(`(?:^|[\\s,.;:!?])${kw}(?:[\\s,.;:!?]|$)`, 'i');
+    return re.test(lower);
+  });
+}
+
+// ── WHOLESALE / BULK DETECTION (NEW v2.8.0) ──
+const WHOLESALE_KEYWORDS = [
+  'wholesale', 'optoor', 'оптоор', 'опт',
+  'олноор', 'olnoor', 'олон ширхэг авах', 'олон ширхэгээр',
+  'reseller', 'дилер', 'diler', 'агент',
+  'b2b', 'бизнес'
+];
+
+function isWholesaleRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (WHOLESALE_KEYWORDS.some(kw => lower.includes(kw))) return true;
+  // 4+ ширхэг хүсэх
+  const qtyMatch = lower.match(/(\d+)\s*(ширхэг|ш\.?|piece|pcs)/i);
+  if (qtyMatch && parseInt(qtyMatch[1], 10) >= 4) return true;
+  return false;
+}
+
+// ── PRICE MANIPULATION DETECTION (NEW v2.8.0) ──
+const PRICE_MANIPULATION_KEYWORDS = [
+  'хямдрал нэмэх', 'хямдруулах', 'дискаунт', 'discount өгөх',
+  'хямдхан болго', 'үнэ буулга', 'буулгаач', 'buulgach',
+  'хямд болго', 'илүү хямд', 'arai khyamd', 'арай хямд'
+];
+
+function isPriceManipulation(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return PRICE_MANIPULATION_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ── DIRECT INFO REQUEST DETECTION (NEW v2.8.0) ──
+const DIRECT_INFO_KEYWORDS = [
+  'мэдээлэл авъя', 'medeelel avya', 'medeelel awya',
+  'тайлбар', 'tailbar',
+  'дэлгэрэнгүй мэд', 'delgerengui',
+  'шүршүүрийн тухай', 'shurshuuriin tuhai',
+  'шүршүүрийн мэдээлэл', 'шүршүүрийн толгойн мэдээлэл',
+  'бүтээгдэхүүний мэдээлэл', 'буүтээгдэхүүний тухай',
+  'product info', 'товч танилцуул', 'танилцуул'
+];
+
+function isDirectInfoRequest(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return DIRECT_INFO_KEYWORDS.some(kw => lower.includes(kw));
 }
 
 // ── UGC/INFLUENCER DETECTION ──
@@ -470,31 +781,50 @@ function isOrderEditRequest(text) {
 
 async function notifyTelegramOrder(senderId, history, isCOD = false) {
   const messages = history.slice(-16);
-  let color = '—', qty = '—', address = '—', phone = '—';
-  const fullText = messages.map(m => m.content).join(' ');
+  const existing = getOrder(senderId) || {};
+  let parsed = { ...existing };
 
-  const colorMatch = fullText.match(/(Pearl White|Slate Gray|Obsidian Black)/i);
-  if (colorMatch) color = colorMatch[1];
+  // History-ийн user message-уудаас slot-уудыг nэгтгэн ялгах
+  for (const m of messages.filter(x => x.role === 'user')) {
+    parsed = parseOrderSlots(m.content, parsed);
+  }
 
-  const qtyMatch = fullText.match(/(\d+)\s*(ширхэг|ш\.?)/i);
-  if (qtyMatch) qty = qtyMatch[1] + ' ширхэг';
+  const color = parsed.color || '—';
+  const qty = parsed.qty ? `${parsed.qty} ширхэг` : '—';
+  const address = parsed.address || '—';
+  const entranceCode = parsed.entranceCode || 'байхгүй';
+  const phone = parsed.phone || '—';
 
-  const phoneMatch = fullText.match(/(\d{8})/);
-  if (phoneMatch) phone = phoneMatch[1];
+  // Үнэ тооцоолох (зөвхөн bundle бол)
+  let total = '—';
+  if (parsed.qty && parsed.color) {
+    total = (parsed.qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+  }
 
-  const userMessages = messages.filter(m => m.role === 'user');
-  const longMsg = userMessages.find(m => m.content.length > 20 && /дүүрэг|хороо|байр|хотхон|гудамж/i.test(m.content));
-  if (longMsg) address = longMsg.content;
+  const orderId = parsed.orderId || generateOrderId();
+
+  // Repeat customer check
+  const placedCount = messages.filter(m =>
+    m.role === 'assistant' && m.content.includes('Таны захиалгыг хүлээн авлаа')
+  ).length;
+  const repeatTag = placedCount >= 2 ? '🔁 <b>REPEAT CUSTOMER</b>\n\n' : '';
+
+  // Time-based tag
+  const hour = new Date().getHours();
+  const afterHours = (hour < 8 || hour >= 22) ? '🌙 <i>Шөнийн цаг — өглөө хариулж болно</i>\n\n' : '';
 
   const paymentLine = isCOD
     ? '💵 Төлбөр: <b>ЖОЛООЧИД БЭЛНЭЭР (COD)</b>'
-    : '🏦 Төлбөр хүлээгдэж байна';
+    : '🏦 Төлбөр: <b>Урьдчилж банкаар (баталгаажилт хүлээгдэж байна)</b>';
 
-  const msg = `🛍 <b>ШИНЭ ЗАХИАЛГА${isCOD ? ' — COD' : ''}!</b>
+  const msg = `${repeatTag}${afterHours}🛍 <b>ШИНЭ ЗАХИАЛГА${isCOD ? ' — COD' : ''}!</b>
+🆔 <code>${orderId}</code>
 
 🎨 Өнгө: <b>${color}</b>
 📦 Тоо: <b>${qty}</b>
+💰 Дүн: <b>${total}</b>
 📍 Хаяг: <b>${address}</b>
+🔢 Орцны код: <b>${entranceCode}</b>
 📞 Утас: <b>${phone}</b>
 ${paymentLine}
 
@@ -503,6 +833,81 @@ ${paymentLine}
 
 <i>Унтраах: <code>/release ${senderId}</code></i>`;
 
+  await sendTelegram(msg);
+
+  // Order state-д хадгалах (30 мин follow-up window-д хэрэгтэй)
+  setOrder(senderId, {
+    ...parsed,
+    orderId,
+    total,
+    placedAt: Date.now(),
+    status: 'placed',
+    isCOD
+  });
+}
+
+// ── CANCELLATION NOTIFY (NEW v2.8.0) ──
+async function notifyTelegramCancellation(senderId, reason = '—', stage = 'requested') {
+  const order = getOrder(senderId) || {};
+  const orderInfo = order.orderId
+    ? `🆔 <code>${order.orderId}</code>\n🎨 ${order.color || '—'} × ${order.qty || '—'}\n📍 ${order.address || '—'}\n📞 ${order.phone || '—'}\n💰 ${order.total || '—'}\n\n`
+    : '';
+  const stageLabel = stage === 'requested' ? 'ЦУЦЛАХ ХҮСЭЛТ' : 'ЦУЦЛАГДЛАА';
+  const emoji = stage === 'requested' ? '⚠️' : '❌';
+
+  const msg = `${emoji} <b>${stageLabel}</b>
+
+${orderInfo}📝 Шалтгаан: <b>${reason}</b>
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Хариулах: https://m.me/${senderId}
+
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
+  await sendTelegram(msg);
+}
+
+// ── ATTACHMENT NOTIFY (NEW v2.8.0) ──
+async function notifyTelegramAttachment(senderId, attType, attUrl = '') {
+  const urlLine = attUrl ? `🔗 URL: ${attUrl}\n` : '';
+  const msg = `📎 <b>ATTACHMENT — Гар хариулт шаардлагатай!</b>
+
+📁 Төрөл: <b>${attType}</b>
+${urlLine}
+👤 Messenger ID: <code>${senderId}</code>
+💬 Хариулах: https://m.me/${senderId}
+
+<i>Bot хариулахаа зогссон.</i>
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
+  await sendTelegram(msg);
+}
+
+// ── PROVINCE DELIVERY NOTIFY (NEW v2.8.0) ──
+async function notifyTelegramProvince(senderId, text) {
+  const msg = `🚛 <b>ОРОН НУТГИЙН ХҮРГЭЛТ!</b>
+
+💬 Хэрэглэгчийн мессеж: <b>${text.slice(0, 200)}</b>
+
+UB-аас гадуур учир тусгай зохицуулалт хэрэгтэй.
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Хариулах: https://m.me/${senderId}
+
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
+  await sendTelegram(msg);
+}
+
+// ── WHOLESALE NOTIFY (NEW v2.8.0) ──
+async function notifyTelegramWholesale(senderId, text) {
+  const msg = `🏪 <b>WHOLESALE / BULK хүсэлт!</b>
+
+💬 Хэрэглэгчийн мессеж: <b>${text.slice(0, 200)}</b>
+
+4+ ширхэг буюу оптын үнэ хүсэлт байна.
+
+👤 Messenger ID: <code>${senderId}</code>
+💬 Хариулах: https://m.me/${senderId}
+
+<i>Унтраах: <code>/release ${senderId}</code></i>`;
   await sendTelegram(msg);
 }
 
@@ -530,15 +935,23 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
-// SYSTEM PROMPT v2.7.0 — 2026.05.25
-// v2.6.1 → v2.7.0 fixes:
-// • Complaint detection — гомдол үг ороход автомат handoff + Telegram alert
-// • Admin takeover detect — Owner "Manager/менежер" гэж бичихэд автомат handoff
-// • Draft variants generator — 3 хувилбарт мессеж Telegram-руу
-// • /send, /dm, /draft, /help командууд нэмэгдсэн
-// Засагдсан: intent detection, үнэ format, filter vs bundle split,
-// storepay alternatives, story/UGC handler, missing field detection,
-// "Pearl White 3-в-1" буруу framing устгасан
+// SYSTEM PROMPT v2.8.0 — 2026.05.27
+// v2.7.1 → v2.8.0 CRITICAL SAFETY FIXES:
+// • User-intent handoff trigger — хэрэглэгч "очиж үзмээр", "менежер" гэхэд бот REPLY бус USER message-аас trigger хийнэ
+// • Cancellation flow — захиалга цуцлах хүсэлт illrew → empathetic reason ask → Telegram notify → handoff
+// • Attachment full-handoff — зураг/бичлэг/voice/sticker ирэх үед AUTO handoff + URL Telegram-руу
+// • Order State Machine — slot-filling, batched parsing (нэг мессеж олон slot fills)
+// • Address detection upgrade — БЗД/БГД/СБД/ХУД/ЧД/СХД/НД district codes + apartment markers
+// • Phone validation — Mongolian mobile prefix check (8/9/7), boundary regex
+// • Province delivery handoff — Дархан/Эрдэнэт/etc → auto handoff (UB-аас гадуур)
+// • Wholesale handoff — 4+ ширхэг буюу wholesale keyword → handoff
+// • Direct info request bypass — "мэдээлэл авъя" type queries → бүх 3 өнгийн info шууд явуулах
+// • Greeting anti-repeat — 5 минутад greeting давтахгүй
+// • Twin/Family filter — "одоогоор бэлэн биш" гэх realistic alternative
+// • Fraud-pattern phrase removed — "Бэлэн мөнгө бэлдэж байгаарай" → trust-building wording
+// • Placeholder substitution — confirmation message JS-ээр assemble хийнэ (LLM-д найдахгүй)
+// • Order followup window — order placed дараа 30 минут идэвхтэй
+// • Repeat customer detect — Telegram-руу нэмэлт мэдээлэлтэй alert
 // =====================================================================
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна. Нэг хариултанд 1–3 өгүүлбэрээс ихгүй.
 
@@ -595,10 +1008,11 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
     🩶 Slate Gray — universal, дотор талд crimson (улаан) цагираг
 
 ▸ "SkinBloom Карбон Филтер" — запас
-  • Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН
-  • Twin Pack 2 ширхэг — 54'900₮ — Хүлээгдэж байна (6 сарын 6)
-  • Family Pack 3 ширхэг — 79'900₮ — Хүлээгдэж байна (6 сарын 6)
-  • Солих давтамж: 4 хүнтэй айлд 3 сарт 1 удаа, 2 хүнтэй айлд 6 сарт 1 удаа
+  • Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН ✅
+  • Twin Pack 2 ширхэг — ОДООГООР БЭЛЭН БИШ ❌ (нөөц дууссан)
+  • Family Pack 3 ширхэг — ОДООГООР БЭЛЭН БИШ ❌ (нөөц дууссан)
+  • Хэрэглэгч Twin/Family хүсэх → "Одоогоор бэлэн биш байна 🌸 Single Pack 29'900₮ авч, 1-2 сарын дараа дахин 1 ширхэг авах боломжтой" гэж зөвлөнө
+  • Solih davtamj: 4 хүнтэй айлд 3 сарт 1 удаа, 2 хүнтэй айлд 6 сарт 1 удаа
 
 ▸ ЧУХАЛ — үнэ бичих форматын дүрэм:
   ✅ "199'900₮" (apostrophe-той)
@@ -621,14 +1035,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ▸ ЗӨВХӨН ЗАПАС FILTER ЗАХИАЛАХ (интент B):
 "Запас Active Carbon Filter байгаа 🌸
 
-🔹 Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН
-🔹 Twin Pack 2 ширхэг — 54'900₮ — Хүлээгдэж байна 6.6
-🔹 Family Pack 3 ширхэг — 79'900₮ — Хүлээгдэж байна 6.6
+🔹 Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН ✅
 
-Та аль хувилбарыг авах вэ?"
+⚠️ Twin Pack (2 ш) / Family Pack (3 ш) одоогоор бэлэн биш.
 
-  → Хэрэглэгч Twin/Family сонговол:
-  "Twin/Family Pack одоогоор нөөцгүй, 6 сарын 6-нд ирэх төлөвтэй 🌸 Хүлээх боломжтой бол захиалга авч болно, эсвэл одоо Single Pack 29'900₮ авч болно."
+Single Pack авах уу?"
+
+  → Хэрэглэгч Twin/Family асуувал:
+  "Twin/Family Pack одоогоор бэлэн биш байна 🌸 Single Pack 29'900₮-аар одоо авч, 1-2 сарын дараа дахин 1 ширхэг авах боломжтой."
 
   → Bundle (шүршүүр) санал болгохгүй — хэрэглэгч filter л хүссэн
 
@@ -707,28 +1121,26 @@ CE дугаар: HX240303050484"
 
 ▸ БҮГД БҮРЭН БОЛМОГЦ — ЗАХИАЛГА БАТАЛГААЖУУЛАХ:
 
-МЕССЕЖ 1 (бүх тохиолдолд):
-"Таны захиалгыг хүлээн авлаа ✅
+⚠️ ЧУХАЛ: Та зөвхөн "Таны захиалгыг хүлээн авлаа ✅" гэж тэмдэглэгээтэй мессеж явуул — бодит үнэ/хаяг/утас substitution-ийг систем хийнэ. Placeholder [Өнгө], [Хаяг], [Утас] хэлбэрээр БИЧИХГҮЙ — энэ нь spam харагдана.
 
-[Өнгө] × [Тоо] — [Нийт үнэ]₮
-📍 [Хаяг]
-📞 [Утас]
+ЯГ ИЙМ ФОРМАТААР хариулна:
+"Таны захиалгыг хүлээн авлаа ✅"
 
-24–48 цагт хүргэгдэнэ 🌸 Манайхыг сонгосонд баярлалаа!"
-
-МЕССЕЖ 2 (урьдчилж банкаар төлөх үед):
-"Хаан банк:
-💳 5403645877
-👤 С.Цолмонбаатар
-IBAN: MN410005005403645877
-✍️ Гүйлгээний утга: [Нэр] + [Утас]"
-
-МЕССЕЖ 3 (авсны дараа бэлнээр — COD):
-"Хүргэлтийн жолоочид [Нийт үнэ]₮ бэлнээр төлнө үү 🌸 Бэлэн мөнгө бэлдэж байгаарай. [COD_ORDER]"
+Төлбөрийн арга тодорхой бол [BANK_ORDER] эсвэл [COD_ORDER] tag-аа нэмж бич — JS код үлдсэн мэдээллийг рендер хийнэ:
+• Урьдчилж банкаар: "Таны захиалгыг хүлээн авлаа ✅ [BANK_ORDER]"
+• Жолоочид бэлнээр: "Таны захиалгыг хүлээн авлаа ✅ [COD_ORDER]"
 
 ▸ ЗАХИАЛГА БАТАЛГААЖСАНЫ ДАРАА ЗАСАХ:
 "Мэдээллийг шинэчилье 🌸 [Засах зүйл]-г өөрчиллөө. Бусад мэдээлэл зөв үү?"
 Засвар баталгаажсаны дараа: "Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
+
+▸ ЗАХИАЛГА ЦУЦЛАХ ХҮСЭЛТ — v2.8.0 шинэ:
+Хэрэглэгч цуцлах хүсэлт гаргавал ЗААВАЛ ингэж хариулна (эелдэг, шалтгаан асууж):
+"Уучлаарай, захиалгыг тань цуцлахаас өмнө бид яагаад болсныг ойлгох сонирхолтой байна 🌸 Танд яагаад тохирохгүй болсон бэ? (хэт удаан / үнэ / өөр сонголт сонирхож байгаа / гэх мэт) [CANCEL_REASON_ASK]"
+
+Шалтгаан хэлсний дараа: "Ойлголоо, баярлалаа 🌸 Захиалга цуцлагдлаа. Дараа дахин туршиж үзвэл бид баяртай байх болно. [CANCEL_CONFIRMED]"
+
+Хэрэглэгч шалтгаан хэлэхээс татгалзвал ("за яахав", "битгий асуу", "болсон шдээ"): "Ойлголоо 🌸 Захиалга цуцлагдлаа. Хэзээ ч буцаж ирэхээ мартсаагаарай. [CANCEL_CONFIRMED]"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. ТЕХНИКИЙН МЭДЭЭЛЭЛ
@@ -746,20 +1158,27 @@ IBAN: MN410005005403645877
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 7. HANDOFF — ОПЕРАТОР РУУ ШИЛЖҮҮЛЭХ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Дараах тохиолдолд handoff хийнэ:
+ЭДГЭЭР ТОХИОЛДОЛД ШУУД [HANDOFF_NEEDED]:
 • Гомдол / буцаалт / refund
-• Wholesale (>5 ширхэг)
+• Wholesale (4+ ширхэг) — JS код шууд handle хийнэ
 • Нарийн техникийн асуулт хариулж чадахгүй бол
 • UGC / influencer / collab
 • "Хүнтэй ярих", "оператор", "менежер" гэх мэт
+• ОЧИЖ ҮЗЭХ хүсэлт — "очиж", "очмоор", "нүдээр харах", "дэлгүүр очих", "офис очих", "байршил", "газар дээр нь" → handoff
+• ОРОН НУТГИЙН хүргэлт — Дархан, Эрдэнэт, Чойбалсан, гэх аймгийн хот → JS код шууд handle хийнэ
+• ҮНИЙН МАНИПУЛЯЦИ — "хямдрал нэмэх", "discount нэм", "арай хямд" → JS код handle хийнэ
 
 Хариулт: "Манай менежер тантай удахгүй холбогдох болно 🌸 [HANDOFF_NEEDED]"
 
+ОЧИЖ ҮЗЭХ хүсэлтэд хариулт: "Бид одоогоор зөвхөн онлайн зарж байна 🌸 Гэвч таны асуултанд манай менежер дэлгэрэнгүй хариулж, хэрэгтэй мэдээллийг өгөх болно. [HANDOFF_NEEDED]"
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-8. ЗУРАГ ИРҮҮЛСЭН ҮЕД
+8. ЗУРАГ/БИЧЛЭГ/STICKER ИРҮҮЛСЭН ҮЕД
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Зургийн агуулга тодорхойгүй бол:
-"Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн мэдээллийг өгье!"
+ЗУРАГ, БИЧЛЭГ, VOICE, ФАЙЛ ИРЭХ ҮЕД:
+ШУУД handoff болгоно. Хариулт ингэж: "Зураг/бичлэгийг хүлээн авлаа 🌸 Манай менежер таны мэдээллийг нягталж, шууд хариулах болно. [HANDOFF_NEEDED]"
+
+ХЭРЭГЛЭГЧЭЭС ӨНГӨ ХЭЛЭХ ЗААЛГА БИТГИЙ ӨГ — хэрэглэгчид ачаалал бий болгоно.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 9. БАТАЛГАА & ХОЛБОО БАРИХ
@@ -969,71 +1388,297 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
+      // ═══════════════════════════════════════════════════════
+      // ATTACHMENT HANDLING (v2.8.0) — image/video/voice/sticker/file
+      // → ШУУД handoff + Telegram alert (vision биш, manual нягтлал)
+      // ═══════════════════════════════════════════════════════
       if (!text && attachments?.length > 0) {
         const attType = attachments[0]?.type;
-        if (['image', 'video', 'sticker'].includes(attType)) {
-          const attUrl = attachments[0]?.payload?.url || '';
-          const attContext = attType === 'image'
-            ? `[Хэрэглэгч зураг илгээлээ${attUrl ? ' — URL: ' + attUrl : ''}. Зургийн агуулга тодорхойгүй байж болно. Хэрэв өнгө эсвэл бүтээгдэхүүн таних боломжгүй бол хэрэглэгчээс зураг дээрх өнгийг (Pearl White, Slate Gray, Obsidian Black) хэлж өгөхийг хүс.]`
-            : `[Хэрэглэгч ${attType} илгээлээ. Юу хэрэгтэйг нь эелдэгээр асуу.]`;
+        const attUrl = attachments[0]?.payload?.url || '';
+
+        // Дараалсан attachment dedupe
+        if (isDuplicateAttachment(senderId)) {
+          console.log(`⏭ Duplicate attachment — skipping [${senderId}]`);
+          continue;
+        }
+
+        // Sticker — зөвхөн emoji-like reaction юм, хариу хэрэггүй
+        if (attType === 'sticker') {
+          console.log(`👍 Sticker [${senderId}] — quiet acknowledge`);
+          continue;
+        }
+
+        // Image / video / audio / file → handoff
+        if (['image', 'video', 'audio', 'file'].includes(attType)) {
+          console.log(`📎 Attachment [${attType}] [${senderId}] → handoff`);
+          addHandoff(senderId);
           try {
-            const reply = await askGPT_DM(senderId, attContext);
-            const isHandoff = shouldTriggerHandoff(reply);
-            const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').replace('[COD_ORDER]', '').trim();
-            await sendDM(senderId, cleanReply);
-            if (isHandoff) {
-              addHandoff(senderId);
-              await notifyTelegramHandoff(senderId, `[${attType} илгээлээ]`);
-            }
+            await sendDMWithHumanAgent(senderId, 'Зураг/бичлэгийг хүлээн авлаа 🌸 Манай менежер таны мэдээллийг нягталж, шууд хариулах болно.');
           } catch (e) {
-            await sendDM(senderId, 'Зургийг харлаа 🌸 Зураг дээр ямар өнгө байгааг хэлэхэд (Pearl White, Slate Gray, Obsidian Black) тухайн өнгийн дэлгэрэнгүй мэдээллийг өгье!');
+            console.error('Attachment DM send error:', e.message);
           }
+          await notifyTelegramAttachment(senderId, attType, attUrl);
         }
         continue;
       }
 
       if (!text) continue;
 
-      // ── COMPLAINT DETECTION — ХАМГИЙН ӨНДӨР ПРИОРИТЕТ ──
-      // Хэрэглэгч санал гомдол мэдүүлбэл Bot хариулахгүй, шууд handoff + Telegram-руу 3 draft
+      // ═══════════════════════════════════════════════════════
+      // PRIORITY-ORDERED TRIGGER CHECKS (v2.8.0)
+      // Дараах дарааллаар шалгана — өндөр приоритеттэй эхэлж
+      // ═══════════════════════════════════════════════════════
+
+      // 1) COMPLAINT — гомдол ноцтой → шууд handoff + 3 draft
       if (isComplaint(text)) {
-        console.log(`🚨 Complaint detected [${senderId}]: ${text.slice(0, 60)}`);
+        console.log(`🚨 Complaint [${senderId}]: ${text.slice(0, 60)}`);
         addHandoff(senderId);
-        // Хэрэглэгчид холбогдох мэдэгдэл явуулна
         await sendDMWithHumanAgent(senderId, '🌸 Таны мессежийг хүлээн авлаа. Манай менежер хариуцлагатайгаар тантай удахгүй холбогдох болно.');
-        // Тухайн user-ын яриаг history-д бүртгэх (draft generation-д хэрэглэх)
         addToHistory(senderId, 'user', text);
-        // Telegram-руу 3 draft variant санал
         await notifyTelegramComplaint(senderId, text, getHistory(senderId));
         continue;
       }
 
+      // 2) CANCELLATION — захиалга цуцлах
+      const existingOrder = getOrder(senderId);
+      if (isCancellationRequest(text)) {
+        console.log(`❌ Cancellation request [${senderId}]: ${text.slice(0, 60)}`);
+        addToHistory(senderId, 'user', text);
+        // Захиалга байгаа эсэхийг шалгах
+        if (existingOrder && existingOrder.status === 'placed') {
+          if (existingOrder.cancelStage === 'reason_asked') {
+            // Хэрэглэгч шалтгаан өгсөн (эсвэл татгалзсан)
+            const negativeReplies = /за яахав|битгий асуу|болсон|болсон шдээ|hereggu|kheregui|asuukhgui/i;
+            const isNegative = negativeReplies.test(text);
+            await sendDM(senderId, isNegative
+              ? 'Ойлголоо 🌸 Захиалга цуцлагдлаа. Хэзээ ч буцаж ирэхээ мартсаагаарай.'
+              : 'Ойлголоо, баярлалаа 🌸 Захиалга цуцлагдлаа. Дараа дахин туршиж үзвэл бид баяртай байх болно.');
+            await notifyTelegramCancellation(senderId, isNegative ? '(шалтгаан хэлэхээс татгалзав)' : text, 'cancelled');
+            existingOrder.status = 'cancelled';
+            setOrder(senderId, existingOrder);
+            // Bot continue хариулахгүй
+            addHandoff(senderId);
+            continue;
+          } else {
+            // Шалтгаан асуух
+            await sendDM(senderId, 'Уучлаарай, захиалгыг тань цуцлахаас өмнө бид яагаад болсныг ойлгох сонирхолтой байна 🌸 Танд яагаад тохирохгүй болсон бэ? (хэт удаан / үнэ / өөр сонголт сонирхож байгаа / гэх мэт)');
+            existingOrder.cancelStage = 'reason_asked';
+            setOrder(senderId, existingOrder);
+            await notifyTelegramCancellation(senderId, text, 'requested');
+            continue;
+          }
+        } else {
+          // Order байхгүй ч цуцлах хүсэлт ирэх → handoff
+          addHandoff(senderId);
+          await sendDMWithHumanAgent(senderId, '🌸 Таны хүсэлтийг хүлээн авлаа. Манай менежер удахгүй холбогдох болно.');
+          await notifyTelegramCancellation(senderId, text, 'requested');
+          continue;
+        }
+      }
+
+      // 3) USER ASKS FOR HUMAN — менежер/оператор/очиж үзэх → handoff
+      if (isUserHandoffRequest(text)) {
+        console.log(`🤝 User handoff request [${senderId}]: ${text.slice(0, 60)}`);
+        addHandoff(senderId);
+        addToHistory(senderId, 'user', text);
+        await sendDMWithHumanAgent(senderId, 'Бид одоогоор зөвхөн онлайн зарж байна 🌸 Гэвч таны асуултанд манай менежер дэлгэрэнгүй хариулж, хэрэгтэй мэдээллийг өгөх болно.');
+        await notifyTelegramHandoff(senderId, text);
+        continue;
+      }
+
+      // 4) PROVINCE DELIVERY — орон нутгийн хүргэлт → handoff
+      if (isProvinceDelivery(text)) {
+        console.log(`🚛 Province delivery [${senderId}]: ${text.slice(0, 60)}`);
+        addHandoff(senderId);
+        addToHistory(senderId, 'user', text);
+        await sendDMWithHumanAgent(senderId, '🌸 Орон нутгийн хүргэлтийн талаар манай менежер тантай холбогдож, хүргэлтийн тариф болон хугацааг тодорхой хэлэх болно.');
+        await notifyTelegramProvince(senderId, text);
+        continue;
+      }
+
+      // 5) WHOLESALE — оптын/4+ ширхэг → handoff
+      if (isWholesaleRequest(text)) {
+        console.log(`🏪 Wholesale [${senderId}]: ${text.slice(0, 60)}`);
+        addHandoff(senderId);
+        addToHistory(senderId, 'user', text);
+        await sendDMWithHumanAgent(senderId, '🌸 Олон ширхэгээр авах хүсэлтэд нь баярлалаа! Оптын үнэ болон нөхцлийн талаар манай менежер тантай удахгүй холбогдох болно.');
+        await notifyTelegramWholesale(senderId, text);
+        continue;
+      }
+
+      // 6) PRICE MANIPULATION — үнэ буулгах хүсэлт → handoff
+      if (isPriceManipulation(text)) {
+        console.log(`💸 Price manipulation [${senderId}]: ${text.slice(0, 60)}`);
+        addHandoff(senderId);
+        addToHistory(senderId, 'user', text);
+        await sendDMWithHumanAgent(senderId, 'Манай үнэ нь одоогоор зарлагдсан хямдралтай үнэ юм 🌸 Тусгай нөхцөл, бөөний үнийн талаар манай менежер тантай холбогдоно.');
+        await notifyTelegramHandoff(senderId, `[Price manipulation] ${text}`);
+        continue;
+      }
+
+      // 7) UGC / INFLUENCER (one-time notify, бот үргэлжлүүлэн ажиллана)
       if (isUGCOrInfluencer(text)) {
         console.log(`📸 UGC/Influencer detected [${senderId}]`);
         await notifyTelegramUGC(senderId, text);
       }
 
+      // ═══════════════════════════════════════════════════════
+      // GREETING ANTI-REPEAT (v2.8.0)
+      // ═══════════════════════════════════════════════════════
+      const greetingPattern = /^(сайн уу|sain uu|hi|hello|мэнд|байна уу|baina uu|hey|өө байна уу)/i;
+      const isGreeting = greetingPattern.test(text.trim());
+
+      // ═══════════════════════════════════════════════════════
+      // DIRECT INFO REQUEST (v2.8.0)
+      // "мэдээлэл авъя", "шүршүүрийн тухай" гэх direct query →
+      // greeting bypass, шууд бүх 3 өнгө + bundle
+      // ═══════════════════════════════════════════════════════
+      if (isDirectInfoRequest(text)) {
+        console.log(`ℹ️ Direct info request [${senderId}]`);
+        const infoMessage = `SkinBloom Бэлгийн Багц — 199'900₮ 🎁 (~~269'000₮~~)
+
+Бүх 3 өнгөнд ижил үнэ, ижил бүрэлдэхүүн:
+⬛ Obsidian Black — мөнгөн цагираг, тансаг
+🤍 Pearl White — цэвэр, гэрэлтсэн
+🩶 Slate Gray — дотор crimson цагираг
+
+Багцад орсон зүйлс:
+✅ Шүүлтүүртэй шүршүүр
+🧴 Active Carbon Filter (44'900₮) — үнэгүй
+🪥 Brush (24'500₮) — үнэгүй
+🧽 Donut Sponge (24'500₮) — үнэгүй
+🚚 Хүргэлт — үнэгүй
+
+Хэмнэлт: 69'100₮ 🔥
+
+Аль өнгийг сонгох уу?`;
+        await sendDM(senderId, infoMessage);
+        addToHistory(senderId, 'user', text);
+        addToHistory(senderId, 'assistant', infoMessage);
+        markGreeting(senderId);
+        continue;
+      }
+
+      // ═══════════════════════════════════════════════════════
+      // BATCH SLOT FILLING (v2.8.0)
+      // Хэрэглэгч нэг мессежэнд олон slot өгсөн бол ялгах
+      // ═══════════════════════════════════════════════════════
+      const currentOrder = getOrder(senderId) || { status: 'collecting' };
+      if (currentOrder.status === 'collecting' || !currentOrder.status) {
+        const parsed = parseOrderSlots(text, currentOrder);
+        if (parsed.color || parsed.address || parsed.phone || parsed.payment) {
+          setOrder(senderId, { ...parsed, status: 'collecting' });
+          console.log(`📝 Slot fill [${senderId}]: ${JSON.stringify({
+            color: parsed.color, qty: parsed.qty, address: parsed.address?.slice(0, 30),
+            phone: parsed.phone, payment: parsed.payment, code: parsed.entranceCode
+          })}`);
+        }
+      }
+
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
+        // Greeting давталтаас сэргийлэх
+        if (isGreeting && hasRecentGreeting(senderId)) {
+          // Greeting дахин явуулахгүй — generic intent ask
+          await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
+          addToHistory(senderId, 'user', text);
+          continue;
+        }
+        if (isGreeting) {
+          markGreeting(senderId);
+        }
+
         const reply = await askGPT_DM(senderId, text);
+
+        // BOT REPLY-ийн доторх tag-уудыг шинжлэх
         const isHandoff = shouldTriggerHandoff(reply);
         const isOrder = isOrderComplete(reply);
-        const isCOD = isCODOrder(reply);
+        const isCOD = isCODOrder(reply) || reply.includes('[COD_ORDER]');
+        const isBank = reply.includes('[BANK_ORDER]');
         const isOrderEdit = reply.includes('[ORDER_EDIT]') || isOrderEditRequest(text);
-        const cleanReply = reply.replace('[HANDOFF_NEEDED]', '').replace('[ORDER_EDIT]', '').replace('[COD_ORDER]', '').trim();
+        const isCancelAsk = reply.includes('[CANCEL_REASON_ASK]');
+        const isCancelConfirmed = reply.includes('[CANCEL_CONFIRMED]');
+
+        // Tag-уудыг арилгана
+        const cleanReply = reply
+          .replace('[HANDOFF_NEEDED]', '')
+          .replace('[ORDER_EDIT]', '')
+          .replace('[COD_ORDER]', '')
+          .replace('[BANK_ORDER]', '')
+          .replace('[CANCEL_REASON_ASK]', '')
+          .replace('[CANCEL_CONFIRMED]', '')
+          .replace(/\[[^\]]+\]/g, '') // Үлдсэн placeholder-уудыг арилгана
+          .trim();
 
         await sendDM(senderId, cleanReply);
 
-        if (isOrder || isCOD) {
-          console.log(`🛍 Order complete [${senderId}] COD=${isCOD}`);
+        // ── Захиалга баталгаажсан үед ──
+        if (isOrder || isCOD || isBank) {
+          console.log(`🛍 Order complete [${senderId}] COD=${isCOD} BANK=${isBank}`);
+
+          // Захиалгын дэлгэрэнгүй мэдэгдлийг JS-ээр assemble хийнэ
+          const orderState = getOrder(senderId) || {};
+          const color = orderState.color || 'тогтоох';
+          const qty = orderState.qty || 1;
+          const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+          const address = orderState.address || '(хаяг тодруулагдана)';
+          const phone = orderState.phone || '(утас тодруулагдана)';
+
+          // Захиалгын дэлгэрэнгүй мессеж
+          const orderDetails = `📋 Захиалгын мэдээлэл:
+
+🎨 Өнгө: ${color}
+📦 Тоо: ${qty} ширхэг
+💰 Нийт: ${total}
+📍 Хаяг: ${address}
+📞 Утас: ${phone}
+
+24–48 цагт хүргэгдэнэ 🌸 Манайхыг сонгосонд баярлалаа!`;
+          await sendDM(senderId, orderDetails);
+
+          // Төлбөрийн мэдээлэл
+          if (isBank) {
+            const bankMsg = `💳 Хаан банк: 5403645877
+👤 С.Цолмонбаатар
+📋 IBAN: MN410005005403645877
+✍️ Гүйлгээний утга: ${phone}
+
+Шилжүүлсний дараа screenshot явуулж захиалгаа баталгаажуулна уу 🌸`;
+            await sendDM(senderId, bankMsg);
+          } else if (isCOD) {
+            // "Бэлэн мөнгө бэлдэж байгаарай" фразыг устгасан
+            const codMsg = `Хүргэлт ирэхэд жолоочид ${total} төлбөрөө өгнө үү 🌸`;
+            await sendDM(senderId, codMsg);
+          }
+
           await notifyTelegramOrder(senderId, getHistory(senderId), isCOD);
         }
 
-        if (isOrderEdit && !isOrder && !isCOD) {
+        if (isOrderEdit && !isOrder && !isCOD && !isBank) {
           await notifyTelegramOrderEdit(senderId, text);
         }
 
-        if (isHandoff && !isOrder && !isCOD) {
+        if (isCancelAsk) {
+          // System prompt-аар cancellation flow эхэлж байгаа
+          const orderState = getOrder(senderId);
+          if (orderState) {
+            orderState.cancelStage = 'reason_asked';
+            setOrder(senderId, orderState);
+          }
+          await notifyTelegramCancellation(senderId, text, 'requested');
+        }
+
+        if (isCancelConfirmed) {
+          const orderState = getOrder(senderId);
+          if (orderState) {
+            orderState.status = 'cancelled';
+            setOrder(senderId, orderState);
+          }
+          await notifyTelegramCancellation(senderId, text, 'cancelled');
+          addHandoff(senderId);
+        }
+
+        if (isHandoff && !isOrder && !isCOD && !isBank) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
           await notifyTelegramHandoff(senderId, text);

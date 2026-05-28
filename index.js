@@ -356,9 +356,10 @@ function parseOrderSlots(text, existing = {}) {
 
   // Payment
   if (!result.payment) {
-    if (/жолооч|joloochid|joloch|joloochi|cod|бэлнээр|belneer|belnerr|авсны дараа|avsny daraa/i.test(lower)) {
+    // COD indicator phrases (isCODPaymentChoice-той ижил logic)
+    if (/жолооч|joloochid|joloch|joloochi|cod|бэлнээр|belneer|belnerr|belnerr|авсны дараа|avsny daraa|avsni daraa|awsny daraa|awsni daraa|tootsoo hiine|tootsoo hiy|тооцоо хий|cash on delivery/i.test(lower)) {
       result.payment = 'COD';
-    } else if (/банк|bank|урьдчилж|urdjilj|шилжүүл|shiljuule/i.test(lower)) {
+    } else if (/банк|bank|урьдчилж|urdjilj|шилжүүл|shiljuule|шижлүүл/i.test(lower)) {
       result.payment = 'BANK';
     }
   }
@@ -428,7 +429,7 @@ function isUserHandoffRequest(text) {
   return USER_HANDOFF_REQUEST_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-// ── CANCELLATION DETECTION (NEW v2.8.0) ──
+// ── CANCELLATION DETECTION (NEW v2.8.0, refined v2.8.1) ──
 const CANCELLATION_KEYWORDS = [
   // Direct cancellation — root "цуцл" гэж эхэлсэн бүх үг
   'цуцл', 'tsutsl', 'tsutsal', 'цуцал',
@@ -440,16 +441,52 @@ const CANCELLATION_KEYWORDS = [
   'авахгүй', 'аваагүй', 'avahgui', 'avaagui',
   'хүсэхгүй', 'huseh gui',
   // Past-tense (хэрэглэгчийн ёжтой acknowledgment)
-  'ойлголоо', 'цуцлагдсан', 'tsutslagdsan', 'цуцлагдлаа',
+  'цуцлагдсан', 'tsutslagdsan', 'цуцлагдлаа',
   // English
   'cancel', 'canceled', 'cancelled', 'cancelation', 'cancellation'
 ];
 
-function isCancellationRequest(text) {
+// COD payment indicator phrases — ЭДГЭЭР CANCELLATION БИШ
+// "авсны дараа", "awsni daraa" гэх phrase нь COD сонголт, цуцлах биш.
+// Эдгээр substring CANCELLATION_KEYWORDS-той false match хийж болзошгүй учир exclude хийнэ.
+const COD_INDICATOR_PHRASES = [
+  'авсны дараа', 'avsny daraa', 'avsni daraa', 'awsny daraa', 'awsni daraa',
+  'жолоочид бэлн', 'joloochid beln', 'jolochid', 'joloch',
+  'бэлнээр төл', 'belneer tol', 'belneer tul',
+  'cod', 'cash on delivery',
+  // Зураг 2-аас real-world test: 'awsni daraa tootsoo hiine' (авсны дараа тооцоо хийнэ)
+  'tootsoo hiine', 'tootsoo hiy', 'тооцоо хий'
+];
+
+function isCODPaymentChoice(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
-  // "цуцлагдсан" гэх past-tense үг хэрэглэгч bot-д хэлэх үед бас trigger хийх
+  return COD_INDICATOR_PHRASES.some(p => lower.includes(p));
+}
+
+function isCancellationRequest(text) {
+  if (!text) return false;
+  // COD payment мэдэгдэл бол cancellation БИШ — урьдчилан exclude хийх
+  if (isCODPaymentChoice(text)) return false;
+  const lower = text.toLowerCase();
   return CANCELLATION_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// Хэрэглэгч cancellation reason flow-д "цуцлах гэж хэлээгүй" гэх денайл хэлсэн эсэхийг шалгах
+const CANCEL_DENIAL_PATTERNS = [
+  'цуцлах гэж хэлээгүй', 'tsutsly gej heleegui', 'tsutslakh gej heleegui',
+  'цуцлахгүй', 'tsutslakhgui', 'tsutslahgui',
+  'захиалах гэж', 'zahialy gej', 'zahialah gej',
+  'болиогүй', 'болиогуй', 'boliogui',
+  'цуцлахаа болих', 'tsutslakhaa bolih',
+  'буруу ойлго', 'buruu oilg', 'misunderstand',
+  'миний хэлсэн нь', 'minii helsen ni'
+];
+
+function isCancellationDenial(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return CANCEL_DENIAL_PATTERNS.some(p => lower.includes(p));
 }
 
 // ── PROVINCE / OUT-OF-UB DELIVERY DETECTION (NEW v2.8.0) ──
@@ -1134,13 +1171,10 @@ CE дугаар: HX240303050484"
 "Мэдээллийг шинэчилье 🌸 [Засах зүйл]-г өөрчиллөө. Бусад мэдээлэл зөв үү?"
 Засвар баталгаажсаны дараа: "Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
 
-▸ ЗАХИАЛГА ЦУЦЛАХ ХҮСЭЛТ — v2.8.0 шинэ:
-Хэрэглэгч цуцлах хүсэлт гаргавал ЗААВАЛ ингэж хариулна (эелдэг, шалтгаан асууж):
-"Уучлаарай, захиалгыг тань цуцлахаас өмнө бид яагаад болсныг ойлгох сонирхолтой байна 🌸 Танд яагаад тохирохгүй болсон бэ? (хэт удаан / үнэ / өөр сонголт сонирхож байгаа / гэх мэт) [CANCEL_REASON_ASK]"
-
-Шалтгаан хэлсний дараа: "Ойлголоо, баярлалаа 🌸 Захиалга цуцлагдлаа. Дараа дахин туршиж үзвэл бид баяртай байх болно. [CANCEL_CONFIRMED]"
-
-Хэрэглэгч шалтгаан хэлэхээс татгалзвал ("за яахав", "битгий асуу", "болсон шдээ"): "Ойлголоо 🌸 Захиалга цуцлагдлаа. Хэзээ ч буцаж ирэхээ мартсаагаарай. [CANCEL_CONFIRMED]"
+▸ ЗАХИАЛГА ЦУЦЛАХ ХҮСЭЛТ — v2.8.1 шинэчилсэн:
+🚫 ХЭЗЭЭ Ч cancellation reply бичихгүй. JS код өөрийн логикоор cancellation flow-ийг handle хийнэ.
+Хэрэглэгч "awsny daraa" / "авсны дараа" / "joloochid belneer" гэх payment мэдэгдэл өгөх нь ЦУЦЛАХ БИШ — COD сонголт. Энэ үед [COD_ORDER] tag ашигла.
+Зөвхөн хэрэглэгч ИЛТ "цуцлая", "болиё", "хэрэггүй болсон" гэвэл [HANDOFF_NEEDED] tag нэм — JS код handoff хийж дараагийн алхамыг удирдана.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. ТЕХНИКИЙН МЭДЭЭЛЭЛ
@@ -1439,8 +1473,23 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 2) CANCELLATION — захиалга цуцлах
+      // 2) CANCELLATION RECOVERY — Cancellation flow дотор хэрэглэгч "цуцлах гэж хэлээгүй"
+      // гэж денайл хийвэл flow-аас гарч, захиалгыг сэргээж, цааш үргэлжлүүлэх.
+      // v2.8.1 шинэ: bot ёжтой буруу cancellation-р алддагүй болох
       const existingOrder = getOrder(senderId);
+      if (existingOrder && existingOrder.cancelStage === 'reason_asked' && isCancellationDenial(text)) {
+        console.log(`🔄 Cancellation denial — recovering [${senderId}]: ${text.slice(0, 60)}`);
+        addToHistory(senderId, 'user', text);
+        // Cancel state-ийг арилгана, захиалгыг сэргээнэ
+        delete existingOrder.cancelStage;
+        existingOrder.status = 'placed';
+        setOrder(senderId, existingOrder);
+        await sendDM(senderId, 'Уучлаарай, буруу ойлголоо 🌸 Захиалга тань үргэлжилж байна. Танд өөр асуух зүйл байна уу?');
+        await sendTelegram(`🔄 <b>FALSE CANCELLATION — RECOVERED</b>\n\n👤 ID: <code>${senderId}</code>\n💬 Денайл: ${text.slice(0, 150)}\n\n<i>Bot захиалгыг сэргээлээ.</i>`);
+        continue;
+      }
+
+      // 3) CANCELLATION — захиалга цуцлах
       if (isCancellationRequest(text)) {
         console.log(`❌ Cancellation request [${senderId}]: ${text.slice(0, 60)}`);
         addToHistory(senderId, 'user', text);
@@ -1596,11 +1645,10 @@ app.post('/webhook', async (req, res) => {
         const isCOD = isCODOrder(reply) || reply.includes('[COD_ORDER]');
         const isBank = reply.includes('[BANK_ORDER]');
         const isOrderEdit = reply.includes('[ORDER_EDIT]') || isOrderEditRequest(text);
-        const isCancelAsk = reply.includes('[CANCEL_REASON_ASK]');
-        const isCancelConfirmed = reply.includes('[CANCEL_CONFIRMED]');
+        // v2.8.1: isCancelAsk / isCancelConfirmed устгасан — JS-only cancellation handling
 
         // Tag-уудыг арилгана
-        const cleanReply = reply
+        let cleanReply = reply
           .replace('[HANDOFF_NEEDED]', '')
           .replace('[ORDER_EDIT]', '')
           .replace('[COD_ORDER]', '')
@@ -1610,22 +1658,50 @@ app.post('/webhook', async (req, res) => {
           .replace(/\[[^\]]+\]/g, '') // Үлдсэн placeholder-уудыг арилгана
           .trim();
 
+        // v2.8.1 SAFEGUARD: order confirm reply дотор "(... тодруулагдана)" гэх
+        // round-bracket placeholder байвал тэр мөрүүдийг хасна — spam-shig харагдахаас сэргийлнэ
+        if (/тодруулагдана|to be confirmed/i.test(cleanReply)) {
+          cleanReply = cleanReply
+            .split('\n')
+            .filter(line => !/тодруулагдана|to be confirmed/i.test(line))
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        }
+
+        // cleanReply хоосон болсон бол (бүх агуулга нь tag/placeholder байсан) → safety message
+        if (!cleanReply) {
+          cleanReply = 'Таны захиалгыг хүлээн авлаа ✅';
+        }
+
         await sendDM(senderId, cleanReply);
 
         // ── Захиалга баталгаажсан үед ──
         if (isOrder || isCOD || isBank) {
           console.log(`🛍 Order complete [${senderId}] COD=${isCOD} BANK=${isBank}`);
 
-          // Захиалгын дэлгэрэнгүй мэдэгдлийг JS-ээр assemble хийнэ
-          const orderState = getOrder(senderId) || {};
-          const color = orderState.color || 'тогтоох';
-          const qty = orderState.qty || 1;
-          const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
-          const address = orderState.address || '(хаяг тодруулагдана)';
-          const phone = orderState.phone || '(утас тодруулагдана)';
+          // BUG #1 FIX (v2.8.1):
+          // LLM өөрөө reply дотор бүх захиалгын мэдээллийг бичсэн бол JS дахин нэмэхгүй.
+          // Илрүүлэх дохио: LLM reply дотор "Өнгө:", "Хаяг:", "Утас:" гэх label бий бөгөөд placeholder-биш утга агуулж буй
+          const llmAlreadyAssembled = /(?:өнгө|өнгь|color)\s*[:：]/i.test(cleanReply)
+            && /(?:хаяг|address)\s*[:：]/i.test(cleanReply)
+            && /(?:утас|phone|дугаар)\s*[:：]/i.test(cleanReply)
+            && !/тодруулагдана|to be confirmed|байхгүй|тогтоох/i.test(cleanReply);
 
-          // Захиалгын дэлгэрэнгүй мессеж
-          const orderDetails = `📋 Захиалгын мэдээлэл:
+          const orderState = getOrder(senderId) || {};
+          const hasFullState = orderState.color && orderState.address && orderState.phone;
+
+          // JS-р order details assembly хийх нь зөвхөн дараах нөхцөлд:
+          //  (a) LLM reply дотор аль хэдийн full details байхгүй
+          //  (b) AND JS state-д бүрэн мэдээлэл бий
+          if (!llmAlreadyAssembled && hasFullState) {
+            const color = orderState.color;
+            const qty = orderState.qty || 1;
+            const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+            const address = orderState.address;
+            const phone = orderState.phone;
+
+            const orderDetails = `📋 Захиалгын мэдээлэл:
 
 🎨 Өнгө: ${color}
 📦 Тоо: ${qty} ширхэг
@@ -1634,19 +1710,34 @@ app.post('/webhook', async (req, res) => {
 📞 Утас: ${phone}
 
 24–48 цагт хүргэгдэнэ 🌸 Манайхыг сонгосонд баярлалаа!`;
-          await sendDM(senderId, orderDetails);
+            await sendDM(senderId, orderDetails);
+          } else if (!llmAlreadyAssembled && !hasFullState) {
+            // State дутуу + LLM-аас гаргаагүй → safety net (handoff)
+            console.log(`⚠️ Order tag detected but incomplete state — handoff [${senderId}]`);
+            addHandoff(senderId);
+            await sendDMWithHumanAgent(senderId, '🌸 Захиалгын мэдээллийг нягтлах хэрэгцээтэй учир манай менежер тантай удахгүй холбогдох болно.');
+            await notifyTelegramHandoff(senderId, `[INCOMPLETE ORDER] ${text}`);
+            continue;
+          }
 
-          // Төлбөрийн мэдээлэл
-          if (isBank) {
+          // Төлбөрийн дэлгэрэнгүй мэдээлэл — зөвхөн LLM өгөөгүй бол
+          const llmHasBankInfo = /5403645877|хаан банк|khaan bank/i.test(cleanReply);
+          const llmHasCodInfo = /жолоочид|joloochid|төлбөрөө өг/i.test(cleanReply);
+
+          if (isBank && !llmHasBankInfo) {
+            const orderStateForBank = getOrder(senderId) || {};
+            const phoneRef = orderStateForBank.phone || '(утас)';
             const bankMsg = `💳 Хаан банк: 5403645877
 👤 С.Цолмонбаатар
 📋 IBAN: MN410005005403645877
-✍️ Гүйлгээний утга: ${phone}
+✍️ Гүйлгээний утга: ${phoneRef}
 
 Шилжүүлсний дараа screenshot явуулж захиалгаа баталгаажуулна уу 🌸`;
             await sendDM(senderId, bankMsg);
-          } else if (isCOD) {
-            // "Бэлэн мөнгө бэлдэж байгаарай" фразыг устгасан
+          } else if (isCOD && !llmHasCodInfo) {
+            const orderStateForCod = getOrder(senderId) || {};
+            const qty = orderStateForCod.qty || 1;
+            const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
             const codMsg = `Хүргэлт ирэхэд жолоочид ${total} төлбөрөө өгнө үү 🌸`;
             await sendDM(senderId, codMsg);
           }
@@ -1658,25 +1749,9 @@ app.post('/webhook', async (req, res) => {
           await notifyTelegramOrderEdit(senderId, text);
         }
 
-        if (isCancelAsk) {
-          // System prompt-аар cancellation flow эхэлж байгаа
-          const orderState = getOrder(senderId);
-          if (orderState) {
-            orderState.cancelStage = 'reason_asked';
-            setOrder(senderId, orderState);
-          }
-          await notifyTelegramCancellation(senderId, text, 'requested');
-        }
-
-        if (isCancelConfirmed) {
-          const orderState = getOrder(senderId);
-          if (orderState) {
-            orderState.status = 'cancelled';
-            setOrder(senderId, orderState);
-          }
-          await notifyTelegramCancellation(senderId, text, 'cancelled');
-          addHandoff(senderId);
-        }
+        // v2.8.1: [CANCEL_REASON_ASK] болон [CANCEL_CONFIRMED] tag handling-ийг УСТГАСАН.
+        // Cancellation flow-ийг бүхэлд нь JS keyword detection-аар удирдах болсон.
+        // Ингэснээр LLM өөрөө буруу cancellation triggered хийх боломжгүй.
 
         if (isHandoff && !isOrder && !isCOD && !isBank) {
           addHandoff(senderId);

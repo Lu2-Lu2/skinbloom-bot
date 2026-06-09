@@ -972,6 +972,14 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.8.2 — 2026.06.09
+// v2.8.1 → v2.8.2 FIX:
+// • Шүүлтүүрийн тоо тодорхой болгов — багцад ганцхан шүүлтүүр (шүршүүрт
+//   суурилуулсан Active Carbon Filter), нөөц дагалддаггүй. "Шүршүүр +
+//   Active Carbon Filter" гэж 2 тусдаа эд анги мэт жагсаахаа больж, нэг
+//   бүхэл зүйл болгов. "2 шүүлтүүр ирнэ" гэх буруу ойлголтоос сэргийлнэ.
+//   (System prompt section 3, 4 + JS infoMessage бүгдэд засагдсан.)
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.0 — 2026.05.27
 // v2.7.1 → v2.8.0 CRITICAL SAFETY FIXES:
 // • User-intent handoff trigger — хэрэглэгч "очиж үзмээр", "менежер" гэхэд бот REPLY бус USER message-аас trigger хийнэ
@@ -1035,7 +1043,8 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ▸ "SkinBloom Бэлгийн Багц" — 199'900₮
   • Бүх 3 өнгө ҮНЭ БА БҮРЭЛДЭХҮҮН ИЖИЛ — "Pearl White 3-в-1" гэж хэзээ ч хэлэхгүй
-  • Дотор нь: Шүршүүр + Active Carbon Filter (44'900₮) + Brush (24'500₮) + Donut Sponge (24'500₮) — бүгд үнэгүй
+  • Дотор нь: Active Carbon Filter урьдчилан суурилуулсан шүршүүр + Brush (24'500₮) + Donut Sponge (24'500₮) — бүгд үнэгүй
+  • ⚠️ ШҮҮЛТҮҮРИЙН ТОО: Багцад ганцхан шүүлтүүр багтана — шүршүүрт суурилуулсан Active Carbon Filter (44'900₮ үнэ цэнэтэй). Нэмэлт буюу нөөц шүүлтүүр дагалддаггүй. "2 шүүлтүүр ирнэ", "нэг суурилсан дээр нэг нөөц дагалдана" гэж ХЭЗЭЭ Ч хэлэхгүй. Нөөц шүүлтүүр хэрэгтэй бол тусдаа 29'900₮.
   • Анх 269'000₮ → одоо 199'900₮ (69'100₮ хэмнэлт)
   • Хүргэлт үнэгүй
   • Шүүрхай хүргэлт: +20'000₮ (UBCAB EXPRESS, тухайн өдөртөө)
@@ -1091,8 +1100,7 @@ Single Pack авах уу?"
 
   → Хэрэглэгч "дэлгэрэнгүй" / "юу дагалдах вэ" гэвэл:
   "Багцад орсон зүйлс:
-✅ Шүүлтүүртэй шүршүүр
-🧴 Active Carbon Filter (44'900₮) — үнэгүй
+✅ SkinBloom шүршүүр (Active Carbon Filter суурилуулсан — 44'900₮ үнэ цэнэтэй)
 🪥 Brush (24'500₮) — үнэгүй
 🧽 Donut Sponge (24'500₮) — үнэгүй
 🚚 Хүргэлт — үнэгүй
@@ -1100,7 +1108,7 @@ Single Pack авах уу?"
 Нийт хэмнэлт: 69'100₮ 🔥"
 
 ▸ FILTER ТООГ АСУУВАЛ (багц авч байгаа явцад):
-"Багц авбал шүршүүр дотор 1 шүүлтүүр суурилсан — тэр 1 ширхэг дагалдана 🌸 3–6 сард 1 удаа солих шаардлагатай."
+"Багцад шүршүүрт суурилуулсан ганцхан шүүлтүүр багтана 🌸 Нэмэлт шүүлтүүр дагалддаггүй. 3–6 сард нэг удаа солих ба нөөц шүүлтүүрийг тусад нь 29'900₮-өөр авна."
 
 ▸ ЗАПАС FILTER ҮНЭ АСУУВАЛ (тусдаа):
 "Запас filter 1 ширхэг — 29'900₮ 🌸 (анх 44'900₮ байсан)"
@@ -1592,8 +1600,7 @@ app.post('/webhook', async (req, res) => {
 🩶 Slate Gray — дотор crimson цагираг
 
 Багцад орсон зүйлс:
-✅ Шүүлтүүртэй шүршүүр
-🧴 Active Carbon Filter (44'900₮) — үнэгүй
+✅ SkinBloom шүршүүр (Active Carbon Filter суурилуулсан — 44'900₮ үнэ цэнэтэй)
 🪥 Brush (24'500₮) — үнэгүй
 🧽 Donut Sponge (24'500₮) — үнэгүй
 🚚 Хүргэлт — үнэгүй
@@ -2005,7 +2012,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.7.0',
+  status: '🌸 SkinBloom Bot running', version: '2.8.2',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2032,7 +2039,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.7.0 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.2 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.7.0 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.2 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

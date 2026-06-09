@@ -972,6 +972,16 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.8.3 — 2026.06.09
+// v2.8.2 → v2.8.3 FIX:
+// • Нөөц шүүлтүүрийн нөөц шинэчлэгдсэн — Twin Pack (2ш, 54'900₮) ба
+//   Family Pack (3ш, 79'900₮) дахин БЭЛЭН болсон. "Одоогоор бэлэн биш"
+//   гэх бүх зөвлөмжийг (section 3, 4, 5) устгаж, гурван багцыг үнэтэй нь
+//   зарж эхэлсэн. Single Pack 29'900₮ хэвээр.
+// • Брэндийн хориотой "запас" үгийг bot-ийн ХЭЛДЭГ бүх текстээс "нөөц"
+//   болгов (intent таних keyword дотор "запас/zapas" нь хэрэглэгчийн
+//   бичдэг үг тул ХЭВЭЭР). "Solih davtamj" → "Солих давтамж".
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.2 — 2026.06.09
 // v2.8.1 → v2.8.2 FIX:
 // • Шүүлтүүрийн тоо тодорхой болгов — багцад ганцхан шүүлтүүр (шүршүүрт
@@ -1018,7 +1028,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 ▸ ШҮҮЛТҮҮР / FILTER авах гэж байгаа:
   Keyword: "шүүлтүүр захиалъя", "шүүлтүүр авъя", "filter avya", "zapas", "запас", "нөөц шүүлтүүр", "карбон филтер захиалъя", "пилтер захиалъя", "пилтер", "pilter", "filtr"
-  → ЗӨВХӨН 29'900₮ запас filter flow
+  → ЗӨВХӨН нөөц filter flow (Single 29'900₮ / Twin 54'900₮ / Family 79'900₮)
   → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ
   → "шүршүүр авах уу, filter авах уу?" гэж АСУУХГҮЙ — хэрэглэгч filter л хүссэн
 
@@ -1053,12 +1063,12 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
     🤍 Pearl White — цэвэр, гэрэлтсэн, арьс үсэнд анхаардаг хүмүүсийн сонголт
     🩶 Slate Gray — universal, дотор талд crimson (улаан) цагираг
 
-▸ "SkinBloom Карбон Филтер" — запас
+▸ "SkinBloom Карбон Филтер" — нөөц шүүлтүүр
   • Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН ✅
-  • Twin Pack 2 ширхэг — ОДООГООР БЭЛЭН БИШ ❌ (нөөц дууссан)
-  • Family Pack 3 ширхэг — ОДООГООР БЭЛЭН БИШ ❌ (нөөц дууссан)
-  • Хэрэглэгч Twin/Family хүсэх → "Одоогоор бэлэн биш байна 🌸 Single Pack 29'900₮ авч, 1-2 сарын дараа дахин 1 ширхэг авах боломжтой" гэж зөвлөнө
-  • Solih davtamj: 4 хүнтэй айлд 3 сарт 1 удаа, 2 хүнтэй айлд 6 сарт 1 удаа
+  • Twin Pack 2 ширхэг — 54'900₮ — БЭЛЭН ✅
+  • Family Pack 3 ширхэг — 79'900₮ — БЭЛЭН ✅
+  • Олуулаа авах тусам хэмнэлттэй — Family Pack хамгийн ашигтай (нэг бүр нь ~26'600₮).
+  • Солих давтамж: 4 хүнтэй өрхөд 3 сар тутамд, 2 хүнтэй өрхөд 6 сар тутамд нэг удаа.
 
 ▸ ЧУХАЛ — үнэ бичих форматын дүрэм:
   ✅ "199'900₮" (apostrophe-той)
@@ -1078,17 +1088,17 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 Та аль өнгийг сонгох вэ?"
 
-▸ ЗӨВХӨН ЗАПАС FILTER ЗАХИАЛАХ (интент B):
-"Запас Active Carbon Filter байгаа 🌸
+▸ ЗӨВХӨН НӨӨЦ FILTER ЗАХИАЛАХ (интент B):
+"Нөөц Active Carbon Filter байгаа 🌸
 
-🔹 Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) — БЭЛЭН ✅
+🔹 Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~)
+🔹 Twin Pack 2 ширхэг — 54'900₮
+🔹 Family Pack 3 ширхэг — 79'900₮
 
-⚠️ Twin Pack (2 ш) / Family Pack (3 ш) одоогоор бэлэн биш.
+Аль багцыг сонгох уу?"
 
-Single Pack авах уу?"
-
-  → Хэрэглэгч Twin/Family асуувал:
-  "Twin/Family Pack одоогоор бэлэн биш байна 🌸 Single Pack 29'900₮-аар одоо авч, 1-2 сарын дараа дахин 1 ширхэг авах боломжтой."
+  → Хэрэглэгч "хамгийн ашигтай нь аль вэ?" гэвэл:
+  "Family Pack хамгийн хэмнэлттэй — нэг шүүлтүүр нь ~26'600₮-д ирнэ 🌸"
 
   → Bundle (шүршүүр) санал болгохгүй — хэрэглэгч filter л хүссэн
 
@@ -1110,8 +1120,8 @@ Single Pack авах уу?"
 ▸ FILTER ТООГ АСУУВАЛ (багц авч байгаа явцад):
 "Багцад шүршүүрт суурилуулсан ганцхан шүүлтүүр багтана 🌸 Нэмэлт шүүлтүүр дагалддаггүй. 3–6 сард нэг удаа солих ба нөөц шүүлтүүрийг тусад нь 29'900₮-өөр авна."
 
-▸ ЗАПАС FILTER ҮНЭ АСУУВАЛ (тусдаа):
-"Запас filter 1 ширхэг — 29'900₮ 🌸 (анх 44'900₮ байсан)"
+▸ НӨӨЦ FILTER ҮНЭ АСУУВАЛ (тусдаа):
+"Нөөц filter: Single 29'900₮ (~~44'900₮~~) · Twin 54'900₮ · Family 79'900₮ 🌸"
 
 ▸ STOREPAY / ХУВААГДСАН ТӨЛБӨР АСУУВАЛ:
 "Манайх одоогоор Storepay-ийг дэмжихгүй байна 🌸 Гэхдээ 2 сонголт бий:
@@ -1152,7 +1162,7 @@ CE дугаар: HX240303050484"
 
 ▸ FLOW B — Зөвхөн Filter (29'900₮):
 Нэг нэгээр асуу:
-1. Хэдэн ширхэг (Single/Twin/Family — Twin/Family хүлээгдэж байна 6.6)
+1. Хэдэн ширхэг (Single 29'900₮ / Twin 54'900₮ / Family 79'900₮)
 2. Бүрэн хаяг
 3. Орцны код
 4. Утасны дугаар
@@ -2012,7 +2022,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.8.2',
+  status: '🌸 SkinBloom Bot running', version: '2.8.3',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2039,7 +2049,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.8.2 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.3 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.2 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.3 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

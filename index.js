@@ -265,17 +265,31 @@ function isPureGreeting(text) {
   return /^(сайн\s*уу|сайн\s*байна\s*уу|сайнуу|sain\s*uu|sain\s*baina\s*uu|hi+|hello+|hey+|мэнд[эг]?|байна\s*уу|baina\s*uu|өө\s*байна\s*уу|юу\s*вэ|yuu?\s*ve)$/i.test(t);
 }
 
-// ── BOT-SENT MESSAGE TRACKING (NEW v2.8.5) ──
-// Bot-ийн өөрийн илгээсэн мессеж echo болж буцаж ирэхэд түүнийг "admin takeover"
-// гэж андуурахаас сэргийлнэ. Жишээ: greeting дотор "менежер" гэдэг үг байгаа тул
-// echo нь isAdminTakeover-ийг trigger хийж, хэрэглэгчийг буруугаар handoff болгох эрсдэлтэй.
-const recentBotMessages = new Map(); // recipientId → { text, ts }
-const BOT_ECHO_WINDOW_MS = 60 * 1000;
+// ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, JS-ээс явна ──
+// (isBotOwnEcho доор үүнийг ашигладаг тул эндээ эрт тодорхойлов.)
+const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
+
+📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
+
+Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+
+// ── BOT-SENT MESSAGE TRACKING (NEW v2.8.5, hardened v2.8.6) ──
+// Bot-ийн өөрийн илгээсэн мессеж echo болж буцаж ирэхэд "admin takeover" гэж андуурахаас сэргийлнэ.
+// v2.8.6 ЗАСВАР: өмнө нь зөвхөн СҮҮЛИЙН 1 мессежийг хадгалдаг байсан тул хэрэглэгч хурдан олон
+// мессеж бичихэд greeting-ийн entry дараагийн мессежээр дарагдаж, түүний удааширсан echo нь
+// admin takeover-ийг trigger хийдэг байв. Одоо хэрэглэгч бүрд сүүлийн хэдэн мессежийг
+// rolling buffer-т хадгалж, аль нэгтэй нь таарвал bot-ийн echo гэж үзнэ.
+const recentBotMessages = new Map(); // recipientId → [{ text, ts }, ...]
+const BOT_ECHO_WINDOW_MS = 5 * 60 * 1000;
+const MAX_BOT_MSGS_PER_USER = 15;
 
 function recordBotMessage(recipientId, text) {
-  if (!recipientId) return;
-  recentBotMessages.set(recipientId, { text: (text || '').trim(), ts: Date.now() });
-  // Cleanup
+  if (!recipientId || !text) return;
+  const cutoff = Date.now() - BOT_ECHO_WINDOW_MS;
+  const arr = (recentBotMessages.get(recipientId) || []).filter(m => m.ts >= cutoff);
+  arr.push({ text: text.trim(), ts: Date.now() });
+  recentBotMessages.set(recipientId, arr.slice(-MAX_BOT_MSGS_PER_USER));
+  // Cleanup — нийт хэрэглэгчийн тоо хэт өсвөл хамгийн эртнийг устгана
   if (recentBotMessages.size > 5000) {
     const first = recentBotMessages.keys().next().value;
     recentBotMessages.delete(first);
@@ -283,12 +297,18 @@ function recordBotMessage(recipientId, text) {
 }
 
 function isBotOwnEcho(recipientId, echoText) {
-  const rec = recentBotMessages.get(recipientId);
-  if (!rec) return false;
-  if (Date.now() - rec.ts > BOT_ECHO_WINDOW_MS) return false;
   const a = (echoText || '').trim();
-  if (!a || !rec.text) return false;
-  return a === rec.text || a.includes(rec.text.slice(0, 40));
+  if (!a) return false;
+  // Static guard: greeting нь үргэлж "менежер" агуулдаг ч bot-ийн илгээдэг мессеж.
+  // Render restart-ийн дараа recentBotMessages хоосорсон ч энэ guard greeting-ийг таниулна.
+  if (a === GREETING_MESSAGE.trim() || a.startsWith('Сайн байна уу! ✨ SkinBloom AI туслах')) return true;
+  const arr = recentBotMessages.get(recipientId);
+  if (!arr || !arr.length) return false;
+  const cutoff = Date.now() - BOT_ECHO_WINDOW_MS;
+  return arr.some(m => {
+    if (m.ts < cutoff || !m.text) return false;
+    return a === m.text || (m.text.length >= 20 && a.includes(m.text.slice(0, 30)));
+  });
 }
 
 // ── ATTACHMENT DEDUPE (NEW v2.8.0) ──
@@ -1021,6 +1041,19 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.8.6 — 2026.06.25 (HOTFIX)
+// v2.8.5 → v2.8.6 FIX:
+// • Admin takeover буруу асах алдаа эцэслэн зассан. v2.8.5-д recentBotMessages
+//   зөвхөн СҮҮЛИЙН 1 мессежийг хадгалдаг байсан тул хэрэглэгч хурдан олон
+//   мессеж бичихэд greeting-ийн entry дарагдаж, түүний удааширсан echo нь
+//   admin takeover-ийг trigger хийдэг байв (Render log-оор баталгаажсан).
+//   Одоо хэрэглэгч бүрд rolling buffer (15 мессеж / 5 мин) + greeting-д
+//   static guard нэмэв.
+// • Давхар greeting race зассан — markGreeting()-ийг await-аас ӨМНӨ тавьж,
+//   зэрэг ирсэн олон "hi"-аас давхар мэндчилгээ гарахаас сэргийлэв.
+// • Цэвэр мэндчилгээ (hi, сайн уу) одоо бүхэлдээ JS-ээс хариулагдана —
+//   LLM-д хүрэхгүй тул LLM хуучин мэндчилгээ давтах боломжгүй болов.
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.5 — 2026.06.25
 // v2.8.4 → v2.8.5 FIX:
 // • First-contact greeting-ийг JS-ээс детерминистикээр явуулдаг болгов
@@ -1082,13 +1115,7 @@ async function notifyTelegramHandoff(senderId, userText) {
 // • Order followup window — order placed дараа 30 минут идэвхтэй
 // • Repeat customer detect — Telegram-руу нэмэлт мэдээлэлтэй alert
 // =====================================================================
-
-// ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, JS-ээс явна ──
-const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
-
-📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
-
-Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+// (GREETING_MESSAGE-ийг echo-tracking-ийн дэргэд дээр тодорхойлсон — давхар тодорхойлохгүй.)
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна. Нэг хариултанд 1–3 өгүүлбэрээс ихгүй.
 
@@ -1740,19 +1767,25 @@ app.post('/webhook', async (req, res) => {
 
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
-        // ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, LLM-д найдахгүй ──
-        if (isPureGreeting(text) && !hasRecentGreeting(senderId)) {
-          await sendDM(senderId, GREETING_MESSAGE);
+        // ── FIRST-CONTACT GREETING (v2.8.5, race-safe v2.8.6) — детерминистик, LLM-д хүргэхгүй ──
+        if (isPureGreeting(text)) {
+          if (hasRecentGreeting(senderId)) {
+            // 5 минутын дотор аль хэдийн мэндэлсэн — давхар greeting явуулахгүй
+            addToHistory(senderId, 'user', text);
+            await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
+            continue;
+          }
+          // markGreeting-ийг await-аас ӨМНӨ тавьж зэрэг ирсэн олон "hi"-аас давхар greeting гарахаас сэргийлнэ
+          markGreeting(senderId);
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', GREETING_MESSAGE);
-          markGreeting(senderId);
           console.log(`👋 First greeting [${senderId}]`);
+          await sendDM(senderId, GREETING_MESSAGE);
           continue;
         }
 
-        // Greeting давталтаас сэргийлэх
+        // greetingPattern-д таарсан ч pure биш (жишээ "сайн уу багц авъя") — markGreeting тавиад LLM руу
         if (isGreeting && hasRecentGreeting(senderId)) {
-          // Greeting дахин явуулахгүй — generic intent ask
           await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
           addToHistory(senderId, 'user', text);
           continue;
@@ -2129,7 +2162,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.8.5',
+  status: '🌸 SkinBloom Bot running', version: '2.8.6',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2156,7 +2189,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.8.5 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.6 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.5 асаалаа!</b>\n\n🆕 <b>Шинэ (v2.8.5):</b>\n✅ Эхний мэндчилгээ JS-ээс детерминистик\n✅ "Менежер гэж бичнэ үү" handoff заавар\n✅ Менежер keyword (Кирилл/Latin) өргөтгөв\n✅ Bot echo tracking — буруу admin takeover засав\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.6 асаалаа!</b>\n\n🆕 <b>Засвар (v2.8.6):</b>\n✅ Admin takeover буруу асах алдаа эцэслэн зассан\n✅ Bot echo rolling buffer (15 мес / 5 мин)\n✅ Давхар greeting race зассан\n✅ Цэвэр мэндчилгээ бүхэлдээ JS-ээс\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

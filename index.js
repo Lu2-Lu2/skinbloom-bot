@@ -255,6 +255,42 @@ function markGreeting(senderId) {
   greetingTimestamps.set(senderId, Date.now());
 }
 
+// ── PURE-GREETING DETECTOR (NEW v2.8.5) ──
+// Зөвхөн "цэвэр мэндчилгээ" (сайн уу, hi гэх мэт ганцаараа) бол детерминистик хариулна.
+// "Сайн уу цагаан авъя" гэх contented мессежийг (16+ тэмдэгт) LLM-д үлдээнэ.
+function isPureGreeting(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().replace(/[^a-zа-яёөү\s]/gi, '').replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 16) return false;
+  return /^(сайн\s*уу|сайн\s*байна\s*уу|сайнуу|sain\s*uu|sain\s*baina\s*uu|hi+|hello+|hey+|мэнд[эг]?|байна\s*уу|baina\s*uu|өө\s*байна\s*уу|юу\s*вэ|yuu?\s*ve)$/i.test(t);
+}
+
+// ── BOT-SENT MESSAGE TRACKING (NEW v2.8.5) ──
+// Bot-ийн өөрийн илгээсэн мессеж echo болж буцаж ирэхэд түүнийг "admin takeover"
+// гэж андуурахаас сэргийлнэ. Жишээ: greeting дотор "менежер" гэдэг үг байгаа тул
+// echo нь isAdminTakeover-ийг trigger хийж, хэрэглэгчийг буруугаар handoff болгох эрсдэлтэй.
+const recentBotMessages = new Map(); // recipientId → { text, ts }
+const BOT_ECHO_WINDOW_MS = 60 * 1000;
+
+function recordBotMessage(recipientId, text) {
+  if (!recipientId) return;
+  recentBotMessages.set(recipientId, { text: (text || '').trim(), ts: Date.now() });
+  // Cleanup
+  if (recentBotMessages.size > 5000) {
+    const first = recentBotMessages.keys().next().value;
+    recentBotMessages.delete(first);
+  }
+}
+
+function isBotOwnEcho(recipientId, echoText) {
+  const rec = recentBotMessages.get(recipientId);
+  if (!rec) return false;
+  if (Date.now() - rec.ts > BOT_ECHO_WINDOW_MS) return false;
+  const a = (echoText || '').trim();
+  if (!a || !rec.text) return false;
+  return a === rec.text || a.includes(rec.text.slice(0, 40));
+}
+
 // ── ATTACHMENT DEDUPE (NEW v2.8.0) ──
 const attachmentTimestamps = new Map(); // senderId → timestamp
 const ATTACHMENT_COOLDOWN_MS = 30 * 1000;
@@ -404,22 +440,35 @@ function shouldTriggerHandoff(reply) {
   return HANDOFF_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
 }
 
-// ── USER-INITIATED HANDOFF DETECTION (NEW v2.8.0) ──
-// Хэрэглэгч өөрөө хүн/менежер хүсэх, очиж үзэх, дэлгүүр визит хүсэх үг
+// ── USER-INITIATED HANDOFF DETECTION (NEW v2.8.0, expanded v2.8.5) ──
+// Хэрэглэгч өөрөө хүн/менежер хүсэх, очиж үзэх, дэлгүүр визит хүсэх үг.
+// substring (.includes) matching тул нэг үндсэн хувилбар олон бичлэгийг хамарна.
 const USER_HANDOFF_REQUEST_KEYWORDS = [
-  // Хүн руу шилжүүлэх
+  // ── Хүн рүү шилжүүлэх ──
   'хүнтэй ярих', 'hunteh yarih', 'huntei yarih', 'оператор', 'operator',
-  'ажилтан', 'azhiltan', 'ажилчин', 'менежер', 'menezher', 'manager',
-  'жинхэнэ хүн', 'real person', 'live agent', 'live person',
-  // Очиж үзэх / бодит дэлгүүр
+  'ажилтан', 'azhiltan', 'ажилчин', 'жинхэнэ хүн', 'real person',
+  'live agent', 'live person', 'human',
+
+  // ── МЕНЕЖЕР — бүх боломжит бичлэг (Кирилл) ──
+  'менежер', 'менэжэр', 'мэнежер', 'мэнэжэр', 'мэнэжер', 'менэжер',
+  'менежэр', 'мэнежэр', 'менеджер', 'менэджэр', 'мэнэджэр',
+  'менежр', 'мэнэжр', 'менэжр', 'менажер', 'мэнажэр',
+
+  // ── МЕНЕЖЕР — Latin ──
+  'manager', 'maneger', 'menejer', 'menezher', 'meneger', 'menegar',
+  'menejr', 'manejer', 'menjer', 'menejor', 'manejor', 'menegr',
+  'manegar', 'managr', 'manjer', 'menager', 'menejar',
+
+  // ── Очиж үзэх / бодит дэлгүүр ──
   'очиж', 'ochih', 'ochmoor', 'ochmor', 'очмоор', 'ochij vzmeer',
   'очиж үзэх', 'очиж үзмээр', 'очиж харах', 'нүдээр харах', 'nudeer harah',
   'газар дээр нь', 'gazar deer', 'дэлгүүр очих', 'delguur ochih',
   'агуулах очих', 'ageulah', 'офис очих', 'office очих',
   'хаашаа очих', 'хаана байр', 'хаанаа байг', 'хаана байш', 'bairshil',
   'байршил', 'байрлал', 'хаягаа хэлээч',
-  // Direct human request
-  'human', 'manai bag', 'manai baig', 'таны баг', 'tani bag',
+
+  // ── Direct human / team ──
+  'manai bag', 'manai baig', 'манай баг', 'таны баг', 'tani bag',
   'bag tanij', 'bag tanij ognoroi'
 ];
 
@@ -972,6 +1021,20 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.8.5 — 2026.06.25
+// v2.8.4 → v2.8.5 FIX:
+// • First-contact greeting-ийг JS-ээс детерминистикээр явуулдаг болгов
+//   (LLM-д найдахгүй). Greeting дотор "Менежер гэж бичнэ үү" гэсэн
+//   handoff escape hatch-ийг ил оруулав.
+// • isPureGreeting() — зөвхөн цэвэр мэндчилгээнд GREETING_MESSAGE-ийг
+//   явуулна; greeting+intent холимог мессежийг LLM-д үлдээнэ.
+// • USER_HANDOFF_REQUEST_KEYWORDS-д "менежер"-ийн Кирилл/Latin олон
+//   бичлэгийг нэмэв (substring matching).
+// • CRITICAL: GREETING_MESSAGE дотор "менежер" гэдэг үг орсон тул bot-ийн
+//   өөрийн мессежийн echo нь isAdminTakeover-ийг trigger хийж, greeting
+//   авсан хэрэглэгч бүрийг буруугаар handoff болгох эрсдэлтэй байсныг
+//   recordBotMessage/isBotOwnEcho tracking-ээр зассан.
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.4 — 2026.06.09
 // v2.8.3 → v2.8.4 FIX:
 // • Нөөц шүүлтүүрийн үнэ/хямдралыг Shopify-аас баталгаажуулж цэгцлэв.
@@ -1019,6 +1082,14 @@ async function notifyTelegramHandoff(senderId, userText) {
 // • Order followup window — order placed дараа 30 минут идэвхтэй
 // • Repeat customer detect — Telegram-руу нэмэлт мэдээлэлтэй alert
 // =====================================================================
+
+// ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, JS-ээс явна ──
+const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
+
+📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
+
+Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна. Нэг хариултанд 1–3 өгүүлбэрээс ихгүй.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1026,7 +1097,11 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Хэрэглэгч анх холбогдоход (сайн уу, hi, hello, мэнд, юу вэ, танилцуулаач, байна уу гэх мэт) ЗААВАЛ дараах текстийг яг ийм байдлаар явуул — өөрчлөхгүй:
 
-"Сайн байна уу! ✨ Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу?"
+"Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
+
+📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
+
+Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 2. ИНТЕНТ ТАНИХ — ХАМГИЙН ЧУХАЛ ДҮРЭМ
@@ -1345,6 +1420,7 @@ function verifySignature(req) {
 }
 
 async function sendDM(recipientId, text) {
+  recordBotMessage(recipientId, text); // v2.8.5: echo tracking
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
       recipient: { id: recipientId }, message: { text }
@@ -1356,6 +1432,7 @@ async function sendDM(recipientId, text) {
 }
 
 async function sendDMWithHumanAgent(recipientId, text) {
+  recordBotMessage(recipientId, text); // v2.8.5: echo tracking
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
       recipient: { id: recipientId },
@@ -1432,11 +1509,13 @@ app.post('/webhook', async (req, res) => {
       // Page-аас хэрэглэгч рүү мессеж явахад echo гэж тэмдэглэгдэнэ.
       // Хэрэв тэр мессеж "manager", "менежер" гэх admin keyword агуулбал
       // тухайн хэрэглэгчийг автомат handoff болгоно.
+      // v2.8.5: Bot-ийн өөрийн мессежийн echo-г isBotOwnEcho()-оор шүүж,
+      // greeting/handoff текст дэх "менежер" үгээс болж буруу takeover хийхээс сэргийлнэ.
       if (event.message?.is_echo) {
         const echoText = event.message?.text || '';
         const recipientId = event.recipient?.id;
         // Echo дотор recipient нь target хэрэглэгч, sender нь page
-        if (recipientId && recipientId !== pageId && isAdminTakeover(echoText)) {
+        if (recipientId && recipientId !== pageId && !isBotOwnEcho(recipientId, echoText) && isAdminTakeover(echoText)) {
           if (!humanHandoff.has(recipientId)) {
             addHandoff(recipientId);
             console.log(`🤝 Admin takeover [${recipientId}] — page-аас "${echoText.slice(0, 40)}..."`);
@@ -1661,6 +1740,16 @@ app.post('/webhook', async (req, res) => {
 
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
+        // ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, LLM-д найдахгүй ──
+        if (isPureGreeting(text) && !hasRecentGreeting(senderId)) {
+          await sendDM(senderId, GREETING_MESSAGE);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', GREETING_MESSAGE);
+          markGreeting(senderId);
+          console.log(`👋 First greeting [${senderId}]`);
+          continue;
+        }
+
         // Greeting давталтаас сэргийлэх
         if (isGreeting && hasRecentGreeting(senderId)) {
           // Greeting дахин явуулахгүй — generic intent ask
@@ -2040,7 +2129,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.8.4',
+  status: '🌸 SkinBloom Bot running', version: '2.8.5',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2067,7 +2156,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.8.4 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.5 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.4 асаалаа!</b>\n\n🆕 <b>Шинэ:</b>\n✅ Гомдол автомат detect + Telegram alert\n✅ Admin takeover (Manager бичихэд handoff)\n✅ 3 хувилбарт draft GPT-аар\n✅ /send, /dm, /draft, /help командууд\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.5 асаалаа!</b>\n\n🆕 <b>Шинэ (v2.8.5):</b>\n✅ Эхний мэндчилгээ JS-ээс детерминистик\n✅ "Менежер гэж бичнэ үү" handoff заавар\n✅ Менежер keyword (Кирилл/Latin) өргөтгөв\n✅ Bot echo tracking — буруу admin takeover засав\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

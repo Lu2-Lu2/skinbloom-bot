@@ -443,6 +443,8 @@ function parseOrderSlots(text, existing = {}) {
 }
 
 // ── HANDOFF DETECTION (Bot reply-аас trigger) ──
+// v2.8.8-аас хойш ХЭРЭГЛЭГДЭХГҮЙ (legacy) — shouldTriggerHandoff одоо зөвхөн
+// [HANDOFF_NEEDED] tag-аар trigger хийдэг. Жагсаалтыг устгаагүй — нөлөөгүй.
 const HANDOFF_KEYWORDS = [
   'манай баг', 'эргэн холбогдох', 'түр хүлээ',
   'удахгүй холбогдох', 'менежер', 'холбогдох болно',
@@ -450,9 +452,14 @@ const HANDOFF_KEYWORDS = [
 ];
 
 function shouldTriggerHandoff(reply) {
-  if (reply.includes('[HANDOFF_NEEDED]')) return true;
-  const lower = reply.toLowerCase();
-  return HANDOFF_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+  // v2.8.8 ROOT FIX: ЗӨВХӨН [HANDOFF_NEEDED] tag-аар trigger хийнэ.
+  // Өмнө нь HANDOFF_KEYWORDS-аар (включая "менежер", "холбогдох болно",
+  // "тантай холбогдах") LLM-ийн ӨӨРИЙН reply-г substring шалгадаг байсан нь
+  // greeting болон энгийн хариулт доторх "менежер" үгэнд таарч, bot өөрийгөө
+  // буруугаар handoff болгодог байв. Бүх жинхэнэ handoff кейст system prompt
+  // [HANDOFF_NEEDED] tag нэмдэг бөгөөд чухал кейсүүд (гомдол, орон нутаг, оптом,
+  // үнэ, хүн хүсэх, attachment) LLM-аас ӨМНӨ JS-ээр баригддаг тул tag-only найдвартай.
+  return reply.includes('[HANDOFF_NEEDED]');
 }
 
 // ── USER-INITIATED HANDOFF DETECTION (NEW v2.8.0, expanded v2.8.5) ──
@@ -2125,7 +2132,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.8.7',
+  status: '🌸 SkinBloom Bot running', version: '2.8.8',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2152,7 +2159,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.8.7 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.8 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.7 асаалаа!</b>\n\n🆕 <b>Засвар (v2.8.7):</b>\n✅ Mass false-handoff үндсээрээ зассан\n✅ Echo-г app_id-аар ялгана (текст биш)\n✅ Bot өөрийн echo → үл тоо\n✅ Хүн inbox-оос гараар бичвэл → жинхэнэ takeover\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.8 асаалаа!</b>\n\n🆕 <b>Засвар (v2.8.8):</b>\n✅ Bot өөрийгөө handoff болгодог алдааг зассан\n✅ shouldTriggerHandoff одоо ЗӨВХӨН [HANDOFF_NEEDED] tag-аар\n✅ "менежер" гэдэг үг зөвхөн ХЭРЭГЛЭГЧ бичсэн үед handoff хийнэ\n✅ (v2.8.7) Echo-г app_id-аар ялгана\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

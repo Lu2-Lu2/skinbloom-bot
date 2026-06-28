@@ -266,19 +266,17 @@ function isPureGreeting(text) {
 }
 
 // ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, JS-ээс явна ──
-// (isBotOwnEcho доор үүнийг ашигладаг тул эндээ эрт тодорхойлов.)
 const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
 
 📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
 
 Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
 
-// ── BOT-SENT MESSAGE TRACKING (NEW v2.8.5, hardened v2.8.6) ──
-// Bot-ийн өөрийн илгээсэн мессеж echo болж буцаж ирэхэд "admin takeover" гэж андуурахаас сэргийлнэ.
-// v2.8.6 ЗАСВАР: өмнө нь зөвхөн СҮҮЛИЙН 1 мессежийг хадгалдаг байсан тул хэрэглэгч хурдан олон
-// мессеж бичихэд greeting-ийн entry дараагийн мессежээр дарагдаж, түүний удааширсан echo нь
-// admin takeover-ийг trigger хийдэг байв. Одоо хэрэглэгч бүрд сүүлийн хэдэн мессежийг
-// rolling buffer-т хадгалж, аль нэгтэй нь таарвал bot-ийн echo гэж үзнэ.
+// ── BOT-SENT MESSAGE TRACKING (legacy v2.8.5/2.8.6 — v2.8.7-д ХЭРЭГЛЭГДЭХГҮЙ) ──
+// v2.8.7-аас хойш echo-г app_id-аар ялгадаг болсон тул доорх текст-based tracking
+// (recordBotMessage / isBotOwnEcho) ашиглагдахаа больсон. Кодыг устгалгүй үлдээв —
+// ажиллагаанд нөлөөгүй. sendDM/sendDMWithHumanAgent доторх recordBotMessage дуудлага
+// харгүй (no-op шахуу) тул хэвээр үлдээж болно.
 const recentBotMessages = new Map(); // recipientId → [{ text, ts }, ...]
 const BOT_ECHO_WINDOW_MS = 5 * 60 * 1000;
 const MAX_BOT_MSGS_PER_USER = 15;
@@ -289,7 +287,6 @@ function recordBotMessage(recipientId, text) {
   const arr = (recentBotMessages.get(recipientId) || []).filter(m => m.ts >= cutoff);
   arr.push({ text: text.trim(), ts: Date.now() });
   recentBotMessages.set(recipientId, arr.slice(-MAX_BOT_MSGS_PER_USER));
-  // Cleanup — нийт хэрэглэгчийн тоо хэт өсвөл хамгийн эртнийг устгана
   if (recentBotMessages.size > 5000) {
     const first = recentBotMessages.keys().next().value;
     recentBotMessages.delete(first);
@@ -299,8 +296,6 @@ function recordBotMessage(recipientId, text) {
 function isBotOwnEcho(recipientId, echoText) {
   const a = (echoText || '').trim();
   if (!a) return false;
-  // Static guard: greeting нь үргэлж "менежер" агуулдаг ч bot-ийн илгээдэг мессеж.
-  // Render restart-ийн дараа recentBotMessages хоосорсон ч энэ guard greeting-ийг таниулна.
   if (a === GREETING_MESSAGE.trim() || a.startsWith('Сайн байна уу! ✨ SkinBloom AI туслах')) return true;
   const arr = recentBotMessages.get(recipientId);
   if (!arr || !arr.length) return false;
@@ -684,8 +679,9 @@ function isComplaint(text) {
   return COMPLAINT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-// ── ADMIN/OPERATOR DETECTION (Page side-аас echo event) ──
-// Энд "manager", "менежер" гэх мэт үг бичигдсэн бол owner гар хүргэхээр оров гэж танина
+// ── ADMIN/OPERATOR DETECTION (legacy — v2.8.7-д ХЭРЭГЛЭГДЭХГҮЙ) ──
+// v2.8.7-аас хойш echo-г app_id-аар ялгадаг тул энэ текст-based keyword шалгалт
+// ашиглагдахаа больсон. Кодыг устгалгүй үлдээв — ажиллагаанд нөлөөгүй.
 const ADMIN_HANDOFF_KEYWORDS = [
   'manager', 'менежер', 'manai bag', 'манай баг',
   'manai bagas', 'манайхаас', 'тантай холбогдох',
@@ -848,7 +844,7 @@ async function notifyTelegramComplaint(senderId, userText, history) {
   await sendTelegram(draftMsg);
 }
 
-// ── ADMIN TAKEOVER NOTIFY (Owner Page-аас Manager гэж бичсэн үед) ──
+// ── ADMIN TAKEOVER NOTIFY (хүн Page inbox-оос гараар бичсэн үед) ──
 async function notifyTelegramAdminTakeover(senderId, adminText) {
   const msg = `🤝 <b>ADMIN TAKEOVER илрэв</b>
 
@@ -1041,81 +1037,44 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.8.7 — 2026.06.28 (ECHO-HANDOFF ROOT FIX)
+// v2.8.6 → v2.8.7 FIX:
+// • MASS FALSE-HANDOFF үндсээрээ зассан. Өмнө нь echo event-ийн admin
+//   takeover-ийг ТЕКСТ-ээр (isAdminTakeover + isBotOwnEcho) ялгадаг байсан
+//   нь эмзэг байв: bot-ийн бараг бүх мессеж ("менежер", "холбогдох" гэх үг
+//   агуулдаг) echo болж буцахад, isBotOwnEcho guard алдвал (Render restart →
+//   recentBotMessages арчигдах, текст яг таарахгүй болох, sendPrivateReply
+//   огт track хийгддэггүй) → буруу admin takeover → бараг бүх хэрэглэгч
+//   handoff болдог байв.
+// • ЗАСВАР: echo-г app_id-аар ялгана. Facebook нь Send API (bot)-аар явсан
+//   мессежийн echo-д app_id өгдөг; хүн Page inbox-оос ГАРААР бичсэн мессежид
+//   app_id БАЙХГҮЙ. Тиймээс: app_id байвал → bot өөрөө → үл тоо; app_id
+//   байхгүй бол → хүн оров → ЖИНХЭНЭ admin takeover → handoff.
+// • Энэ нь restart-д арчигддаггүй, текст таарахаас хамааралгүй найдвартай
+//   ялгаа. isBotOwnEcho / isAdminTakeover / recordBotMessage / GREETING
+//   static guard одоо ашиглагдахгүй (dead code, устгаагүй — нөлөөгүй).
+// • ЗАН ӨӨРЧЛӨЛТ: одоо Page inbox-оос аль ч хэрэглэгч рүү ГАРААР мессеж
+//   бичвэл тэр хэрэглэгч шууд handoff болно (зөв логик — хүн оровол bot
+//   ухарна), /release хүртэл bot чимээгүй болно.
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.6 — 2026.06.25 (HOTFIX)
 // v2.8.5 → v2.8.6 FIX:
-// • Admin takeover буруу асах алдаа эцэслэн зассан. v2.8.5-д recentBotMessages
-//   зөвхөн СҮҮЛИЙН 1 мессежийг хадгалдаг байсан тул хэрэглэгч хурдан олон
-//   мессеж бичихэд greeting-ийн entry дарагдаж, түүний удааширсан echo нь
-//   admin takeover-ийг trigger хийдэг байв (Render log-оор баталгаажсан).
-//   Одоо хэрэглэгч бүрд rolling buffer (15 мессеж / 5 мин) + greeting-д
-//   static guard нэмэв.
-// • Давхар greeting race зассан — markGreeting()-ийг await-аас ӨМНӨ тавьж,
-//   зэрэг ирсэн олон "hi"-аас давхар мэндчилгээ гарахаас сэргийлэв.
-// • Цэвэр мэндчилгээ (hi, сайн уу) одоо бүхэлдээ JS-ээс хариулагдана —
-//   LLM-д хүрэхгүй тул LLM хуучин мэндчилгээ давтах боломжгүй болов.
+// • Admin takeover буруу асах алдааг rolling buffer (15 мес / 5 мин) +
+//   greeting static guard-аар зассан (v2.8.7-д энэ аргыг app_id-аар сольсон).
+// • Давхар greeting race зассан — markGreeting()-ийг await-аас ӨМНӨ тавьсан.
+// • Цэвэр мэндчилгээ (hi, сайн уу) бүхэлдээ JS-ээс хариулагдана.
 // ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.5 — 2026.06.25
-// v2.8.4 → v2.8.5 FIX:
-// • First-contact greeting-ийг JS-ээс детерминистикээр явуулдаг болгов
-//   (LLM-д найдахгүй). Greeting дотор "Менежер гэж бичнэ үү" гэсэн
-//   handoff escape hatch-ийг ил оруулав.
-// • isPureGreeting() — зөвхөн цэвэр мэндчилгээнд GREETING_MESSAGE-ийг
-//   явуулна; greeting+intent холимог мессежийг LLM-д үлдээнэ.
-// • USER_HANDOFF_REQUEST_KEYWORDS-д "менежер"-ийн Кирилл/Latin олон
-//   бичлэгийг нэмэв (substring matching).
-// • CRITICAL: GREETING_MESSAGE дотор "менежер" гэдэг үг орсон тул bot-ийн
-//   өөрийн мессежийн echo нь isAdminTakeover-ийг trigger хийж, greeting
-//   авсан хэрэглэгч бүрийг буруугаар handoff болгох эрсдэлтэй байсныг
-//   recordBotMessage/isBotOwnEcho tracking-ээр зассан.
+// • First-contact greeting-ийг JS-ээс детерминистикээр явуулдаг болгов.
+// • isPureGreeting() — зөвхөн цэвэр мэндчилгээнд GREETING_MESSAGE.
+// • USER_HANDOFF_REQUEST_KEYWORDS-д "менежер"-ийн олон бичлэг нэмэв.
 // ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.8.4 — 2026.06.09
-// v2.8.3 → v2.8.4 FIX:
-// • Нөөц шүүлтүүрийн үнэ/хямдралыг Shopify-аас баталгаажуулж цэгцлэв.
-//   Үндсэн үнэ 44'900₮ (compare-at). 2026.08.01 хүртэл хямдрал:
-//   Single 29'900₮, Twin 54'900₮ (~~89'800₮~~), Family 79'900₮
-//   (~~134'700₮~~). Family нэг бүр ~26'600₮ — хамгийн ашигтай.
-//   8-р сарын 1-ний хугацааны яаралтай байдлыг (хэт шахалтгүй) нэмэв.
-// • Багц доторх шүүлтүүрийн "44'900₮ үнэ цэнэтэй" → "44'900₮, Үнэгүй".
-// • ШИНЭ дүрэм: шүршүүрийг ТУСД нь зардаггүй — зөвхөн Бэлгийн Багцаар.
-//   "шүршүүрээ шүүлтүүртэй хамт" гэх асуултад эвтэйхэн ойлгуулна.
+// • Нөөц шүүлтүүрийн үнэ/хямдрал цэгцлэв (Single 29'900 / Twin 54'900 /
+//   Family 79'900, 2026.08.01 хүртэл). Шүршүүр зөвхөн багцаар.
 // ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.3 — 2026.06.09
-// v2.8.2 → v2.8.3 FIX:
-// • Нөөц шүүлтүүрийн нөөц шинэчлэгдсэн — Twin Pack (2ш, 54'900₮) ба
-//   Family Pack (3ш, 79'900₮) дахин БЭЛЭН болсон. "Одоогоор бэлэн биш"
-//   гэх бүх зөвлөмжийг (section 3, 4, 5) устгаж, гурван багцыг үнэтэй нь
-//   зарж эхэлсэн. Single Pack 29'900₮ хэвээр.
-// • Брэндийн хориотой "запас" үгийг bot-ийн ХЭЛДЭГ бүх текстээс "нөөц"
-//   болгов (intent таних keyword дотор "запас/zapas" нь хэрэглэгчийн
-//   бичдэг үг тул ХЭВЭЭР). "Solih davtamj" → "Солих давтамж".
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.2 — 2026.06.09
-// v2.8.1 → v2.8.2 FIX:
-// • Шүүлтүүрийн тоо тодорхой болгов — багцад ганцхан шүүлтүүр (шүршүүрт
-//   суурилуулсан Active Carbon Filter), нөөц дагалддаггүй. "Шүршүүр +
-//   Active Carbon Filter" гэж 2 тусдаа эд анги мэт жагсаахаа больж, нэг
-//   бүхэл зүйл болгов. "2 шүүлтүүр ирнэ" гэх буруу ойлголтоос сэргийлнэ.
-//   (System prompt section 3, 4 + JS infoMessage бүгдэд засагдсан.)
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.0 — 2026.05.27
-// v2.7.1 → v2.8.0 CRITICAL SAFETY FIXES:
-// • User-intent handoff trigger — хэрэглэгч "очиж үзмээр", "менежер" гэхэд бот REPLY бус USER message-аас trigger хийнэ
-// • Cancellation flow — захиалга цуцлах хүсэлт illrew → empathetic reason ask → Telegram notify → handoff
-// • Attachment full-handoff — зураг/бичлэг/voice/sticker ирэх үед AUTO handoff + URL Telegram-руу
-// • Order State Machine — slot-filling, batched parsing (нэг мессеж олон slot fills)
-// • Address detection upgrade — БЗД/БГД/СБД/ХУД/ЧД/СХД/НД district codes + apartment markers
-// • Phone validation — Mongolian mobile prefix check (8/9/7), boundary regex
-// • Province delivery handoff — Дархан/Эрдэнэт/etc → auto handoff (UB-аас гадуур)
-// • Wholesale handoff — 4+ ширхэг буюу wholesale keyword → handoff
-// • Direct info request bypass — "мэдээлэл авъя" type queries → бүх 3 өнгийн info шууд явуулах
-// • Greeting anti-repeat — 5 минутад greeting давтахгүй
-// • Twin/Family filter — "одоогоор бэлэн биш" гэх realistic alternative
-// • Fraud-pattern phrase removed — "Бэлэн мөнгө бэлдэж байгаарай" → trust-building wording
-// • Placeholder substitution — confirmation message JS-ээр assemble хийнэ (LLM-д найдахгүй)
-// • Order followup window — order placed дараа 30 минут идэвхтэй
-// • Repeat customer detect — Telegram-руу нэмэлт мэдээлэлтэй alert
+// SYSTEM PROMPT v2.8.0–2.8.3 — өмнөх засваруудын товчоо доорх кодод хэвээр.
 // =====================================================================
-// (GREETING_MESSAGE-ийг echo-tracking-ийн дэргэд дээр тодорхойлсон — давхар тодорхойлохгүй.)
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна. Нэг хариултанд 1–3 өгүүлбэрээс ихгүй.
 
@@ -1447,7 +1406,7 @@ function verifySignature(req) {
 }
 
 async function sendDM(recipientId, text) {
-  recordBotMessage(recipientId, text); // v2.8.5: echo tracking
+  recordBotMessage(recipientId, text); // legacy echo tracking (v2.8.7-д ашиглагдахгүй, нөлөөгүй)
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
       recipient: { id: recipientId }, message: { text }
@@ -1459,7 +1418,7 @@ async function sendDM(recipientId, text) {
 }
 
 async function sendDMWithHumanAgent(recipientId, text) {
-  recordBotMessage(recipientId, text); // v2.8.5: echo tracking
+  recordBotMessage(recipientId, text); // legacy echo tracking (v2.8.7-д ашиглагдахгүй, нөлөөгүй)
   try {
     await axios.post('https://graph.facebook.com/v19.0/me/messages', {
       recipient: { id: recipientId },
@@ -1532,22 +1491,26 @@ app.post('/webhook', async (req, res) => {
     const pageId = entry.id;
 
     for (const event of (entry.messaging || [])) {
-      // ── ADMIN/PAGE TAKEOVER DETECT (echo event) ──
-      // Page-аас хэрэглэгч рүү мессеж явахад echo гэж тэмдэглэгдэнэ.
-      // Хэрэв тэр мессеж "manager", "менежер" гэх admin keyword агуулбал
-      // тухайн хэрэглэгчийг автомат handoff болгоно.
-      // v2.8.5: Bot-ийн өөрийн мессежийн echo-г isBotOwnEcho()-оор шүүж,
-      // greeting/handoff текст дэх "менежер" үгээс болж буруу takeover хийхээс сэргийлнэ.
+      // ── ADMIN/PAGE TAKEOVER DETECT (echo event) — v2.8.7 (app_id-based) ──
+      // v2.8.7 ROOT FIX: текст-based echo шүүлтийг (isBotOwnEcho / isAdminTakeover)
+      // бүрэн орлуулж, app_id-аар ялгана. Facebook нь Send API-аар явсан bot-ийн
+      // мессежийн echo-д app_id өгдөг; хүн Page inbox-оос ГАРААР бичсэн мессежид
+      // app_id БАЙХГҮЙ. Энэ нь restart-д арчигддаггүй, текст таарахаас хамааралгүй
+      // найдвартай ялгаа — mass false-handoff-ийг устгана.
       if (event.message?.is_echo) {
         const echoText = event.message?.text || '';
         const recipientId = event.recipient?.id;
-        // Echo дотор recipient нь target хэрэглэгч, sender нь page
-        if (recipientId && recipientId !== pageId && !isBotOwnEcho(recipientId, echoText) && isAdminTakeover(echoText)) {
-          if (!humanHandoff.has(recipientId)) {
-            addHandoff(recipientId);
-            console.log(`🤝 Admin takeover [${recipientId}] — page-аас "${echoText.slice(0, 40)}..."`);
-            await notifyTelegramAdminTakeover(recipientId, echoText);
-          }
+
+        // app_id байвал → bot өөрөө илгээсэн мессежийн echo → БҮРЭН үл тоо
+        if (event.message.app_id) {
+          continue;
+        }
+
+        // app_id байхгүй → хүн Page inbox-оос ГАРААР бичсэн → ЖИНХЭНЭ admin takeover
+        if (recipientId && recipientId !== pageId && !humanHandoff.has(recipientId)) {
+          addHandoff(recipientId);
+          console.log(`🤝 Admin takeover [${recipientId}] — human inbox: "${echoText.slice(0, 40)}"`);
+          await notifyTelegramAdminTakeover(recipientId, echoText);
         }
         continue;
       }
@@ -2162,7 +2125,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.8.6',
+  status: '🌸 SkinBloom Bot running', version: '2.8.7',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2189,7 +2152,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.8.6 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.8.7 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.6 асаалаа!</b>\n\n🆕 <b>Засвар (v2.8.6):</b>\n✅ Admin takeover буруу асах алдаа эцэслэн зассан\n✅ Bot echo rolling buffer (15 мес / 5 мин)\n✅ Давхар greeting race зассан\n✅ Цэвэр мэндчилгээ бүхэлдээ JS-ээс\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.8.7 асаалаа!</b>\n\n🆕 <b>Засвар (v2.8.7):</b>\n✅ Mass false-handoff үндсээрээ зассан\n✅ Echo-г app_id-аар ялгана (текст биш)\n✅ Bot өөрийн echo → үл тоо\n✅ Хүн inbox-оос гараар бичвэл → жинхэнэ takeover\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

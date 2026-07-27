@@ -325,23 +325,120 @@ function generateOrderId() {
   return `SB-${ymd}-${rand}`;
 }
 
-// ── PHONE EXTRACTION & VALIDATION (NEW v2.8.0) ──
+// ── PHONE EXTRACTION & VALIDATION (v2.8.0, ROOT FIX v2.9.2) ──
+// v2.9.2 ЗАСВАР: өмнөх `text.replace(/\+?976/g, ' ')` нь "976"-г текстийн
+// ХААНААС Ч гэсэн таслан устгадаг байсан тул 99761234, 88976543 гэх мэт
+// БОДИТ дугааруудыг эвдэж, null буцаадаг байв. Одоо 976-г зөвхөн улсын
+// кодын БАЙРЛАЛД (8 оронтой дугаарын өмнө) байвал л хасна.
+// Мөн зай, зураас, хаалт бүхий бичлэгийг (9511 3550, 9511-3550) дэмжинэ.
+const MN_PHONE_FIRST_DIGITS = ['5', '7', '8', '9'];
+
+function stripCountryCode(text) {
+  // 976 / +976 -г ЗӨВХӨН улсын кодын байрлалд (8 оронтой дугаарын өмнө) хасна.
+  // Ингэснээр 99761234, 88976543 гэх БОДИТ дугаарууд эвдрэхгүй.
+  return String(text).replace(/(^|[^\d])\+?976[\s\-().]*(?=\d{8}(?!\d))/g, '$1');
+}
+
+function collapseDigitSeparators(text) {
+  // "9511 3550", "9511-3550", "(9511) 3550" → "95113550"
+  return String(text).replace(/(\d)[\s\-().]{1,2}(?=\d)/g, '$1');
+}
+
+function normalizePhoneText(text) {
+  if (!text) return '';
+  return stripCountryCode(collapseDigitSeparators(String(text)));
+}
+
 function extractPhone(text) {
   if (!text) return null;
-  // +976 prefix-ийг арилгана
-  const normalized = text.replace(/\+?976/g, ' ');
-  // Бие даасан 8-оронтой тоо хайх (boundary-той)
-  const matches = normalized.match(/(?:^|[^\d])(\d{8})(?:[^\d]|$)/g);
-  if (!matches) return null;
-  for (const m of matches) {
-    const num = m.match(/(\d{8})/)[1];
-    const firstDigit = num[0];
-    // Монголын mobile/landline эхний орон: 5, 7, 8, 9
-    if (['5', '7', '8', '9'].includes(firstDigit)) {
-      return num;
+  const attempt = (t) => {
+    const matches = t.match(/(?:^|[^\d])(\d{8})(?:[^\d]|$)/g);
+    if (!matches) return null;
+    for (const m of matches) {
+      const num = m.match(/(\d{8})/)[1];
+      // Монголын mobile/landline эхний орон: 5, 7, 8, 9
+      if (MN_PHONE_FIRST_DIGITS.includes(num[0])) return num;
     }
+    return null;
+  };
+  // 1-р оролдлого — форматлагч тэмдэгтийг ХӨНДӨХГҮЙ (хаяг доторх тоог
+  // санамсаргүй нийлүүлэхээс сэргийлнэ). Ихэнх кейс энд шийдэгдэнэ.
+  const found = attempt(stripCountryCode(String(text)));
+  if (found) return found;
+  // 2-р оролдлого — зөвхөн 1-р нь юу ч олоогүй үед зай/зураасыг нийлүүлнэ
+  return attempt(normalizePhoneText(text));
+}
+
+// ── PHONE INPUT VALIDATOR (NEW v2.9.2) ──
+// АРХИТЕКТУРЫН ЗАРЧИМ: тоо тоолох/шалгах ажлыг LLM-д ХЭЗЭЭ Ч даалгахгүй.
+// GPT-4o-mini оронг найдвартай тоолж чаддаггүй тул "95113550" гэсэн зөв
+// дугаарыг "8 оронтой оруулна уу" гэж буруу татгалздаг байв. Одоо энэ
+// шалгалтыг бүхэлд нь JS хийж, хариултыг нь ч өөрөө өгнө.
+//
+// Буцаах утга: { isAttempt, valid, phone, message }
+//  • isAttempt=false → энэ мессеж утас биш (хаяг, тоо ширхэг, орцны код г.м.)
+//  • isAttempt=true, valid=true  → phone талбарт бэлэн
+//  • isAttempt=true, valid=false → message-ийг JS өөрөө илгээнэ
+function validatePhoneInput(text) {
+  const none = { isAttempt: false, valid: false, phone: null, message: null };
+  if (!text) return none;
+
+  const raw = String(text).trim();
+  // Зөвхөн "дугаар мэт" мессежийг л шалгана: цэвэр тоо + форматлагч тэмдэгт.
+  // Хаяг, "2 ширхэг", урт өгүүлбэрийг ЭНД БАРИХГҮЙ.
+  if (!/^[+\d\s\-().]+$/.test(raw)) return none;
+
+  const normalized = normalizePhoneText(raw);
+  const digits = normalized.replace(/\D/g, '');
+
+  // 7-с богино бол утас гэж үзэхгүй (орцны код 2-6 орон, тоо ширхэг 1-2 орон)
+  if (digits.length < 7 || digits.length > 11) return none;
+
+  if (digits.length === 8 && MN_PHONE_FIRST_DIGITS.includes(digits[0])) {
+    return { isAttempt: true, valid: true, phone: digits, message: null };
   }
-  return null;
+
+  if (digits.length === 8) {
+    return {
+      isAttempt: true, valid: false, phone: null,
+      message: 'Энэ дугаар танигдсангүй 🌸 Монголын дугаар 5, 7, 8 эсвэл 9-өөр эхэлдэг. Дугаараа дахин шалгаад явуулна уу.'
+    };
+  }
+
+  if (digits.length < 8) {
+    return {
+      isAttempt: true, valid: false, phone: null,
+      message: 'Дугаар дутуу байна 🌸 Монголын утасны дугаар 8 оронтой. Бүтнээр нь дахин явуулна уу.'
+    };
+  }
+
+  return {
+    isAttempt: true, valid: false, phone: null,
+    message: 'Дугаар хэт урт байна 🌸 8 оронтой утасны дугаараа явуулна уу.'
+  };
+}
+
+// ── ORDER STATE → LLM CONTEXT (NEW v2.9.2) ──
+// LLM нь JS-ийн цуглуулсан slot-уудыг мэддэггүй байсан тул аль хэдийн
+// өгсөн мэдээллийг дахин асуудаг байв. Одоо state-ийг system note болгож
+// оруулна — LLM зөвхөн ДУТУУ талбарыг асууна.
+function buildOrderStateNote(senderId) {
+  const o = getOrder(senderId);
+  if (!o) return null;
+  const lines = [];
+  if (o.color) lines.push(`• Өнгө: ${o.color} ✓`);
+  if (o.qty) lines.push(`• Тоо ширхэг: ${o.qty} ✓`);
+  if (o.address) lines.push(`• Хаяг: ${o.address} ✓`);
+  if (o.entranceCode) lines.push(`• Орцны код: ${o.entranceCode} ✓`);
+  if (o.phone) lines.push(`• Утасны дугаар: ${o.phone} ✓ (СИСТЕМ ШАЛГАЖ БАТАЛГААЖУУЛСАН — зөв дугаар. Дахин бүү асуу, бүү эргэлз, оронг нь бүү тоол.)`);
+  if (o.payment) lines.push(`• Төлбөрийн арга: ${o.payment === 'COD' ? 'Жолоочид бэлнээр (COD)' : 'Урьдчилж банкаар'} ✓`);
+  if (!lines.length) return null;
+
+  return `[СИСТЕМИЙН ДОТООД МЭДЭЭЛЭЛ — хэрэглэгчид харагдахгүй]
+Энэ захиалгад аль хэдийн ЦУГЛУУЛСАН БА БАТАЛГААЖСАН мэдээлэл:
+${lines.join('\n')}
+
+ДҮРЭМ: Дээр ✓ тэмдэглэгдсэн талбаруудыг ДАХИН АСУУХГҮЙ, эргэлзэхгүй, буруу гэж хэлэхгүй. Зөвхөн жагсаалтад БАЙХГҮЙ талбарыг асуу. Бүх талбар бүрэн бол захиалгыг баталгаажуул.`;
 }
 
 // ── ADDRESS DETECTION & SCORING (NEW v2.8.0) ──
@@ -1046,6 +1143,34 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
+// SYSTEM PROMPT v2.9.2 — 2026.07.27 (PHONE VALIDATION ROOT FIX)
+// v2.9.1 → v2.9.2 ЗАСВАР — 3 тусдаа буг:
+//
+// 🐛 BUG A (гол): ЗӨВ утасны дугаарыг татгалздаг.
+//    Шалтгаан: утасны оронг тоолох шалгалтыг SYSTEM_PROMPT-оор LLM-д
+//    даалгасан байв ("Утас 8 оронгүй бол '8 оронтой дугаар оруулна уу'").
+//    GPT-4o-mini орон тоолж чаддаггүй тул "95113550" гэсэн БҮРЭН ЗӨВ
+//    дугаарыг буруу гэж татгалзаж, хэрэглэгчийг гацаадаг байв.
+//    ЗАСВАР: validatePhoneInput() — шалгалт бүхэлдээ JS-д шилжсэн.
+//    Буруу дугаар LLM-д ОГТ ХҮРЭХГҮЙ (JS өөрөө хариулаад continue).
+//    SYSTEM_PROMPT-д "оронг бүү тоол" гэсэн хатуу хориг нэмсэн + илгээхийн
+//    өмнөх сүүлийн guard (LLM гэнэт гаргавал таслана).
+//
+// 🐛 BUG B: extractPhone() бодит дугааруудыг эвдэж байсан.
+//    `text.replace(/\+?976/g, ' ')` нь "976"-г ХААНААС Ч устгадаг байсан тул
+//    99761234 → "99 1234" болж null буцаадаг байв (88976543 мөн адил).
+//    ЗАСВАР: 976-г зөвхөн улсын кодын байрлалд (8 оронтой дугаарын өмнө)
+//    хасна. Мөн "9511 3550", "9511-3550" форматыг одоо танина.
+//
+// 🐛 BUG C: Давхар мэндчилгээ (screenshot: 2 удаа дараалан).
+//    LLM нь SYSTEM_PROMPT-ийн 1-р хэсгээс болж JS аль хэдийн явуулсан
+//    greeting-ийг дахин үүсгэдэг байв. ЗАСВАР: илгээхийн өмнө greeting
+//    гарын үсгийг таньж, hasRecentGreeting бол богино үргэлжлэл болгоно.
+//
+// ➕ НЭМЭЛТ: buildOrderStateNote() — JS-ийн цуглуулсан slot-уудыг LLM-ийн
+//    context-д system note болгож оруулна. Өмнө нь LLM нь JS-ийн state-ийг
+//    ОГТ мэддэггүй байсан тул аль хэдийн өгсөн мэдээллийг дахин асуудаг байв.
+// ---------------------------------------------------------------------
 // SYSTEM PROMPT v2.9.1 — 2026.07.27 (FILTER "ҮНЭГҮЙ" SIGNAL REMOVAL)
 // v2.9.0 → v2.9.1 ӨӨРЧЛӨЛТ:
 // • 🔴 Багц доторх шүүлтүүрийг "Үнэгүй" гэж тэмдэглэхээ БОЛИВ.
@@ -1281,7 +1406,7 @@ CE дугаар: HX240303050484"
 2. Тоо ширхэг
 3. Бүрэн хаяг (дүүрэг, хороо, хотхон/байр/тоот/давхар)
 4. Орцны код — "байхгүй бол алгасъя" гэж хэл
-5. Утасны дугаар (8 оронтой байх ёстой)
+5. Утасны дугаар (системээр автоматаар шалгагдана — чи оронг нь ТООЛОХГҮЙ)
 6. Төлбөрийн арга: "Төлбөрийг яаж хийх вэ? 1️⃣ Урьдчилж банкаар 2️⃣ Авсны дараа жолоочид бэлнээр"
 
 ▸ FLOW B — Зөвхөн Filter (29'900₮):
@@ -1296,7 +1421,13 @@ CE дугаар: HX240303050484"
 Дутуу талбар байвал ЗӨВХӨН ТЭР НЭГИЙГ л асуу — бүх 6-г дахин давтахгүй.
 Жишээ: утас дутуу бол "Утасны дугаараа оруулна уу 🌸"
 Орцны код дутуу бол "Орцны код байгаа уу? Байхгүй бол алгасъя 🌸"
-Утас 8 оронгүй бол "8 оронтой дугаар оруулна уу 🌸"
+
+⛔⛔ УТАСНЫ ДУГААРЫГ ЧИ ШАЛГАХГҮЙ — ХАМГИЙН ЧУХАЛ ДҮРЭМ:
+• Дугаарын оронг ХЭЗЭЭ Ч тоолохгүй. Чи тоо тоолж чаддаггүй.
+• "8 оронтой оруулна уу", "8 оронтой байх ёстой", "дугаар буруу байна", "дахин шалгана уу" гэх мэт утасны алдааны мессежийг ХЭЗЭЭ Ч бичихгүй.
+• Утасны дугаарын зөв эсэхийг систем (JS код) шалгаж, буруу бол хэрэглэгчид ӨӨРӨӨ сануулна. Чамд энэ ажил ОГТ ирэхгүй.
+• Хэрэглэгч тоо явуулсан бол ТЭР НЬ ЗӨВ гэж үзэж, шууд дараагийн дутуу талбар руу шилж эсвэл захиалгыг баталгаажуул.
+• Хэрэв [СИСТЕМИЙН ДОТООД МЭДЭЭЛЭЛ] блокт "Утасны дугаар: ... ✓" гэж байвал утас БҮРЭН цуглуулагдсан — дахин асуухыг хатуу хориглоно.
 
 ▸ БҮГД БҮРЭН БОЛМОГЦ — ЗАХИАЛГА БАТАЛГААЖУУЛАХ:
 
@@ -1422,12 +1553,15 @@ function addToHistory(senderId, role, content) {
   }
 }
 
-async function askGPT_DM(senderId, userText) {
+async function askGPT_DM(senderId, userText, stateNote = null) {
   addToHistory(senderId, 'user', userText);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...getHistory(senderId).slice(-MAX_HISTORY)
   ];
+  // v2.9.2: JS-ийн цуглуулсан slot-уудыг сүүлийн system note болгож оруулна.
+  // Хамгийн сүүлд байрлуулсан тул LLM-д хамгийн их жинтэй нөлөөлнө.
+  if (stateNote) messages.push({ role: 'system', content: stateNote });
   const res = await axios.post('https://api.openai.com/v1/chat/completions', {
     model: 'gpt-4o-mini', messages, temperature: 0.5, max_tokens: 500
   }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });
@@ -1767,6 +1901,28 @@ app.post('/webhook', async (req, res) => {
       }
 
       // ═══════════════════════════════════════════════════════
+      // PHONE INPUT VALIDATION (NEW v2.9.2) — LLM-д ХҮРГЭХГҮЙ
+      // Шалтгаан: GPT-4o-mini оронг найдвартай тоолж чаддаггүй тул
+      // "95113550" гэсэн ЗӨВ дугаарыг "8 оронтой оруулна уу" гэж буруу
+      // татгалздаг байв. Одоо шалгалт бүхэлдээ JS-д — LLM-д огт ирэхгүй.
+      // ═══════════════════════════════════════════════════════
+      const phoneCheck = validatePhoneInput(text);
+      if (phoneCheck.isAttempt && !phoneCheck.valid) {
+        console.log(`📵 Invalid phone [${senderId}]: "${text.trim()}"`);
+        addToHistory(senderId, 'user', text);
+        addToHistory(senderId, 'assistant', phoneCheck.message);
+        await sendDM(senderId, phoneCheck.message);
+        continue;
+      }
+      if (phoneCheck.isAttempt && phoneCheck.valid) {
+        const po = getOrder(senderId) || { status: 'collecting' };
+        if (po.phone !== phoneCheck.phone) {
+          setOrder(senderId, { ...po, phone: phoneCheck.phone, status: po.status || 'collecting' });
+          console.log(`📞 Phone accepted [${senderId}]: ${phoneCheck.phone}`);
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════
       // BATCH SLOT FILLING (v2.8.0)
       // Хэрэглэгч нэг мессежэнд олон slot өгсөн бол ялгах
       // ═══════════════════════════════════════════════════════
@@ -1811,7 +1967,7 @@ app.post('/webhook', async (req, res) => {
           markGreeting(senderId);
         }
 
-        const reply = await askGPT_DM(senderId, text);
+        const reply = await askGPT_DM(senderId, text, buildOrderStateNote(senderId));
 
         // BOT REPLY-ийн доторх tag-уудыг шинжлэх
         const isHandoff = shouldTriggerHandoff(reply);
@@ -1846,6 +2002,36 @@ app.post('/webhook', async (req, res) => {
         // cleanReply хоосон болсон бол (бүх агуулга нь tag/placeholder байсан) → safety message
         if (!cleanReply) {
           cleanReply = 'Таны захиалгыг хүлээн авлаа ✅';
+        }
+
+        // ── v2.9.2 GUARD #1: ДАВХАР GREETING ──
+        // LLM нь SYSTEM_PROMPT-ийн 1-р хэсгийн улмаас JS аль хэдийн явуулсан
+        // мэндчилгээг дахин үүсгэдэг байв (screenshot: 2 удаа дараалан).
+        // Greeting-ийн гарын үсгийг таньж, давхардвал богино үргэлжлэл болгоно.
+        if (cleanReply.includes('SkinBloom AI туслах тантай холбогдлоо')) {
+          if (hasRecentGreeting(senderId)) {
+            console.log(`🔁 Duplicate greeting suppressed [${senderId}]`);
+            cleanReply = 'Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸';
+          } else {
+            markGreeting(senderId);
+          }
+        }
+
+        // ── v2.9.2 GUARD #2: УТАСНЫ АЛДААНЫ МЕССЕЖ ──
+        // LLM хэдийгээр хатуу хоригтой ч заримдаа "8 оронтой" гэж гаргаж
+        // мэднэ. Утас аль хэдийн баталгаажсан байхад ийм мессеж явуулахыг
+        // сүүлийн хамгаалалт болгон бүрэн таслана.
+        const stOrder = getOrder(senderId) || {};
+        if (stOrder.phone && /8\s*орон|найман орон|дугаар.*буруу|дугаараа.*дахин/i.test(cleanReply)) {
+          console.log(`🛑 LLM phone-error suppressed [${senderId}] (phone=${stOrder.phone})`);
+          const missing = [];
+          if (!stOrder.color) missing.push('Аль өнгийг сонгох вэ? (Pearl White / Slate Gray / Obsidian Black) 🌸');
+          else if (!stOrder.qty) missing.push('Хэдэн ширхэг авах вэ? 🌸');
+          else if (!stOrder.address) missing.push('Хүргэлтийн бүрэн хаягаа явуулна уу (дүүрэг, хороо, байр, тоот) 🌸');
+          else if (!stOrder.payment) missing.push('Төлбөрийг яаж хийх вэ? 1️⃣ Урьдчилж банкаар 2️⃣ Авсны дараа жолоочид бэлнээр 🌸');
+          cleanReply = missing.length
+            ? `Дугаарыг тань хүлээн авлаа ✅ ${missing[0]}`
+            : 'Дугаарыг тань хүлээн авлаа ✅ Танд өөр тодруулах зүйл байна уу? 🌸';
         }
 
         await sendDM(senderId, cleanReply);
@@ -2179,7 +2365,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.1',
+  status: '🌸 SkinBloom Bot running', version: '2.9.2',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2206,7 +2392,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.1 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.2 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.1 асаалаа!</b>\n\n🆕 <b>Шинэчлэлт (v2.9.1):</b>\n✅ Багц доторх шүүлтүүрээс "Үнэгүй" тэмдэглэгээг хассан\n   → "Active Carbon Filter суурилуулсан — 44\'900₮"\n✅ "Шүүлтүүр бэлгээр дагалдана" гэсэн сигнал бүрэн хоригдов\n   ("запас ирнэ гэж бодсон" гомдлын үндсэн шалтгаан)\n\n<b>v2.9.0 (бүтээгдэхүүний canon):</b>\n✅ KDF устгасан — РАДИАЛ 3 давхар бүтэц\n✅ "Хүнд металл", "бактер" claim хориглов\n✅ Нөөц шүүлтүүрийн promo 09.01 хүртэл\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.2 асаалаа!</b>\n\n🆕 <b>Засвар (v2.9.2) — утасны дугаар:</b>\n✅ ЗӨВ дугаарыг татгалздаг алдаа зассан\n   (LLM орон тоолж чаддаггүй → шалгалт JS руу шилжсэн)\n✅ 99761234 мэт дугаарыг эвдэж байсан 976-filter зассан\n✅ "9511 3550", "+976 95113550" формат дэмжигдэнэ\n✅ Давхар мэндчилгээ таслагдав\n✅ LLM одоо цуглуулсан мэдээллээ мэднэ — дахин асуухгүй\n\n<b>v2.9.1:</b> Багцад шүүлтүүр "үнэгүй" сигнал хасагдав\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

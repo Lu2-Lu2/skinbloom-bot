@@ -228,8 +228,21 @@ function setOrder(senderId, order) {
   saveActiveOrders();
 }
 
+// v3.0.1 FIX: 'collecting' төлөв 6 цагийн дараа хүчингүй болно.
+// Өмнө нь хугацаагүй байсан тул хуучин тестийн хаяг/утас ШИНЭ яриа руу
+// нэвчиж, "hi" гэхэд "Таны хаяг бүртгэгдсэн" гэж хариулдаг байв.
+const ORDER_COLLECTING_TTL = 6 * 60 * 60 * 1000;
+
 function getOrder(senderId) {
-  return activeOrders.get(senderId);
+  const o = activeOrders.get(senderId);
+  if (o && (o.status === 'collecting' || !o.status)
+        && Date.now() - (o.updatedAt || 0) > ORDER_COLLECTING_TTL) {
+    activeOrders.delete(senderId);
+    saveActiveOrders();
+    console.log(`🧹 Stale collecting order cleared [${senderId}]`);
+    return undefined;
+  }
+  return o;
 }
 
 function clearOrder(senderId) {
@@ -394,9 +407,12 @@ function ensureGiftLine(senderId, text) {
   return text.trim() + '\n\n' + (n === 0 ? GIFT_FULL : GIFT_SHORT);
 }
 
-// Бэлгийн мөр ЯВУУЛАХГҮЙ контекст (гомдол, цуцлалт, handoff, төлбөр, premium)
+// Бэлгийн мөр ЯВУУЛАХГҮЙ контекст:
+// гомдол, цуцлалт, handoff, төлбөр + v3.0.1: захиалгын slot цуглуулж байгаа
+// мессежүүд ("утасны дугаар оруулна уу" гэх мэт — тэнд бэлэг дурдах нь
+// урсгалыг сарниулна, транскриптээс баталгаажсан).
 function shouldSkipGift(text) {
-  return /цуцлагдлаа|цуцлах|уучлаарай|менежер тантай|менежер удахгүй|хүлээн авлаа ✅|Хаан банк|IBAN|Гүйлгээний утга/i.test(text || '');
+  return /цуцлагдлаа|цуцлах|уучлаарай|менежер тантай|менежер удахгүй|хүлээн авлаа ✅|Хаан банк|IBAN|Гүйлгээний утга|утасны дугаар|төлбөрийн арг|хаягаа (явуул|үлдээ|оруул)|Орцны код|Хэдэн ширхэг|хүргэлтийн бүрэн хаяг/i.test(text || '');
 }
 
 function withGift(senderId, text) {
@@ -462,7 +478,12 @@ const PREMIUM_KEYWORDS = [
   'хэрхэн ажилладаг', 'давхарга', 'davharga', 'шүүлтүүр яаж', 'филтр яаж',
   'үзэмж', 'харагдац', 'ямар харагд', 'дизайн', 'design', 'гоё юу', 'goyo yu',
   'өнгө нь ямар', 'ongo ni yamar',
-  'хаана үйлдвэр', 'хаанахын', 'хятад юм уу', 'hyatad', 'гарал үүсэл', 'сертификат'
+  'хаана үйлдвэр', 'хаанахын', 'хятад юм уу', 'hyatad', 'гарал үүсэл', 'сертификат',
+  // v3.0.1: Latin галиг — хэрэглэгчдийн ихэнх нь Latin-аар бичдэг.
+  // Транскриптээс: "her udaan hereglegdeh" premium гэж танигдаагүй байв.
+  'her udaan', 'udaan hereg', 'udaan edel', 'hereglegde', 'edelgee',
+  'evderdeg', 'evderh', 'evdreh gui', 'chanartai yu', 'yamar chanar',
+  'yugaar hiisen', 'yamar material', 'butets', 'davhargatai'
 ];
 
 function isPremiumIntent(text) {
@@ -495,8 +516,10 @@ const PREMIUM_ANSWERS = {
 
 function getPremiumAnswer(text) {
   const l = (text || '').toLowerCase();
+  // Хүргэлтийн гомдол premium руу орохоос сэргийлнэ (Latin "hurgelt udaan")
+  if (/хүргэлт|hurgelt|hvrgelt/i.test(l)) return null;
   if (/бүтэц|butets|давхарга|davharga|дотор нь|яаж ажилл|хэрхэн ажилл|шүүлтүүр яаж|филтр яаж/i.test(l)) return PREMIUM_ANSWERS.structure;
-  if (/эвдрэх|evdreh|бат бөх|удаан эдэлгээ|хэр удаан|баталгаа|warranty|зэвэрдэг/i.test(l)) return PREMIUM_ANSWERS.durability;
+  if (/эвдрэх|evdre|evderd|evderh|бат бөх|удаан эдэлгээ|хэр удаан|her udaan|udaan (hereg|edel)|hereglegde|edelgee|баталгаа|batalgaa|warranty|зэвэрдэг/i.test(l)) return PREMIUM_ANSWERS.durability;
   if (/үзэмж|харагдац|ямар харагд|дизайн|design|өнгө нь ямар/i.test(l)) return PREMIUM_ANSWERS.look;
   if (/хаана үйлдвэр|хаанахын|хятад|hyatad|гарал үүсэл|сертификат/i.test(l)) return PREMIUM_ANSWERS.origin;
   if (/материал|material|юугаар хийсэн|ямар материал|хуванцар|abs|металл|жинтэй/i.test(l)) return PREMIUM_ANSWERS.material;
@@ -524,23 +547,78 @@ const PREMIUM_NOTE = `[СИСТЕМИЙН ЗААВАР — PREMIUM ГОРИМ]
 ион солилцоо, нано мөнгө, керамик, эрдэс чулуу, витамин, Герман/Япон/Солонгос
 технологи, патент, medical-grade, олон горим, эмнэлгийн үр дүн.`;
 
-// 📸 Premium макро зураг. Facebook-д хүрэх public HTTPS URL оруулна.
-// Хоосон бол зураг илгээхгүй — алдаа гарахгүй.
-const PREMIUM_IMAGES = {
-  'Obsidian Black': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/hf_20260728_211753_a7705171-9605-4b04-941d-83fdaa78784c_1.png?v=1785777404],
-  'Pearl White': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/O1CN01EmrIgN22XaxVkNdOW__2567207130-0-cib.jpg?v=1785777441],
-  'Slate Gray': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/grok-image-80927b7c-95be-45b8-8be6-ac43a5ed262c.jpg?v=1785777469],
-  default: [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/image.jpg?v=1785777258]
+// 📸 Бүтээгдэхүүний зураг — premium хариулт БОЛОН "зураг харья" хүсэлт
+// хоёуланд ашиглагдана. Facebook-д хүрэх public HTTPS URL оруулна
+// (Shopify Files → линк хуулах). Хоосон бол сайтын линк рүү fallback хийнэ.
+const PRODUCT_IMAGES = {
+  'Obsidian Black': [],
+  'Pearl White': [],
+  'Slate Gray': [],
+  default: []
 };
 
+function getProductImages(color) {
+  return (PRODUCT_IMAGES[color] && PRODUCT_IMAGES[color].length)
+    ? PRODUCT_IMAGES[color]
+    : PRODUCT_IMAGES.default;
+}
+
 async function sendPremiumImages(senderId, color) {
-  const urls = (PREMIUM_IMAGES[color] && PREMIUM_IMAGES[color].length)
-    ? PREMIUM_IMAGES[color]
-    : PREMIUM_IMAGES.default;
-  for (const url of urls.slice(0, 2)) {
+  for (const url of getProductImages(color).slice(0, 2)) {
     try { await sendImageDM(senderId, url); }
     catch (e) { console.error('Premium image error:', e.message); }
   }
+}
+
+// ── v3.0.1: ЗУРАГНЫ ХҮСЭЛТ ──
+// Транскриптээс: "Бодит зураг харья", "хар өнгийг харж болох уу?" гэхэд бот
+// "боломжгүй" гэж хариулж байв — бот зураг илгээж ЧАДДАГ атлаа худал хариулт.
+const IMAGE_REQUEST_RX = /зураг|zurag|photo|пото|харж болох уу|harj boloh|үзье|uzye|vzye|харья|hariya|бодит.*хар|яг ямар харагд/i;
+
+function isImageRequest(text) {
+  if (!text) return false;
+  return IMAGE_REQUEST_RX.test(text);
+}
+
+function detectColorMention(text) {
+  if (!text) return null;
+  if (/pearl|цагаан|tsagaan|white/i.test(text)) return 'Pearl White';
+  if (/slate|саарал|saaral|gray|grey/i.test(text)) return 'Slate Gray';
+  // ⚠️ JS-ийн \b нь Кирилл үсэгтэй АЖИЛЛАДАГГҮЙ (\b нь зөвхөн ASCII word
+  // boundary) — тиймээс /хар\b/ хэзээ ч таардаггүй байв. Lookahead ашиглана.
+  if (/obsidian|black|хар(?![а-яёөүa-z])|har(?![a-zа-я])/i.test(text)) return 'Obsidian Black';
+  return null;
+}
+
+const COLOR_CAPTIONS = {
+  'Obsidian Black': 'Obsidian Black — мөнгөлөг цагирагтай, гүн хар матт 🖤',
+  'Pearl White': 'Pearl White — дулаан гэрэлтэй, цэвэр цайвар 🤍',
+  'Slate Gray': 'Slate Gray — час улаан дотоод цагирагтай, тансаг бараан 🩶'
+};
+
+async function handleImageRequest(senderId, text) {
+  const color = detectColorMention(text) || (getOrder(senderId) || {}).color || null;
+  const urls = getProductImages(color);
+
+  if (urls.length) {
+    const caption = color
+      ? COLOR_CAPTIONS[color]
+      : 'SkinBloom — 3 өнгөний сонголт 🌸';
+    for (const url of urls.slice(0, 2)) {
+      try { await sendImageDM(senderId, url); }
+      catch (e) { console.error('Image request send error:', e.message); }
+    }
+    const follow = `${caption}\n\nАль өнгө нь танд илүү таалагдаж байна?`;
+    await sendDM(senderId, follow);
+    return follow;
+  }
+
+  // Зураг тохируулагдаагүй үеийн fallback — "боломжгүй" гэж ХЭЗЭЭ Ч хэлэхгүй
+  const fallback = color
+    ? `${COLOR_CAPTIONS[color]}\n\nБүх өнцгөөс авсан бодит зургийг эндээс харна уу 🌸\nskinbloom.store`
+    : `Бүх 3 өнгөний бодит зургийг эндээс харна уу 🌸\nskinbloom.store\n\n⬛ Obsidian Black · 🤍 Pearl White · 🩶 Slate Gray`;
+  await sendDM(senderId, fallback);
+  return fallback;
 }
 
 // =====================================================================
@@ -637,7 +715,16 @@ function buildOrderStateNote(senderId) {
 Энэ захиалгад аль хэдийн ЦУГЛУУЛСАН БА БАТАЛГААЖСАН мэдээлэл:
 ${lines.join('\n')}
 
-ДҮРЭМ: Дээр ✓ тэмдэглэгдсэн талбаруудыг ДАХИН АСУУХГҮЙ, эргэлзэхгүй, буруу гэж хэлэхгүй. Зөвхөн жагсаалтад БАЙХГҮЙ талбарыг асуу. Бүх талбар бүрэн бол захиалгыг баталгаажуул.`;
+ДҮРЭМ (дарааллаар нь чанд мөрд):
+1) Хэрэглэгчийн асуултад ЭХЛЭЭД БҮРЭН хариул.
+2) ✓ тэмдэглэгдсэн талбарыг ДАХИН АСУУХГҮЙ, эргэлзэхгүй, буруу гэж хэлэхгүй.
+3) Дутуу талбарыг ЗӨВХӨН хэрэглэгч захиалгын сэдвээр ярьж байгаа үед л асуу
+   (хаяг/утас/өнгө/төлбөр өгч байгаа, "захиалъя" гэж байгаа).
+4) Хэрэглэгч МЭДЭЭЛЛИЙН асуулт асуувал (үнэ, чанар, материал, хугацаа, зураг,
+   шүүлтүүр г.м.) — зөвхөн асуултад нь хариулаад ЗОГС. Хариултын төгсгөлд
+   "утасны дугаар болон төлбөрийн аргыг оруулна уу" гэж ШААРДАХГҮЙ. Мессеж
+   бүрт үүнийг давтах нь хэрэглэгчийг шахаж, зугтаахад хүргэдэг.
+5) Бүх талбар бүрэн болмогц л захиалгыг баталгаажуул.`;
 }
 
 // ── ADDRESS DETECTION & SCORING ──
@@ -677,7 +764,7 @@ function parseOrderSlots(text, existing = {}) {
   if (!result.color) {
     if (/pearl\s*white|цагаан|tsagaan|tsagan|tagaan/i.test(text)) result.color = 'Pearl White';
     else if (/slate\s*gray|saaral|саарал|саарл/i.test(text)) result.color = 'Slate Gray';
-    else if (/obsidian|black|хар|har\b|kar\b/i.test(text)) result.color = 'Obsidian Black';
+    else if (/obsidian|black|(?<![а-яёөүa-z])хар(?![а-яёөүa-z])|(?<![a-zа-я])har(?![a-zа-я])|(?<![a-zа-я])kar(?![a-zа-я])/i.test(text)) result.color = 'Obsidian Black';
   }
 
   if (!result.qty) {
@@ -1343,10 +1430,18 @@ Messenger нь markdown-г РЕНДЕРЛЭДЭГГҮЙ. Дараах тэмдэ
   → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ
   → "шүршүүр авах уу, filter авах уу?" гэж АСУУХГҮЙ — хэрэглэгч filter л хүссэн
 
-▸ POST-ИЙН CONFUSION — "ирээгүй", "ийм гэж бодоогүй", "буруу ойлгосон":
+▸ POST-ИЙН CONFUSION — ЗӨВХӨН дараах нөхцөл ХОЁУЛАА биелсэн үед:
+  (1) Хэрэглэгч бараагаа АЛЬ ХЭДИЙН хүлээж авсан, (2) буруу/дутуу ирсэн гэж хэлж байгаа.
   → Эхлээд уян зөвшөөрөл: "Уучлаарай, ойлголтын зөрүү гарсан байна"
-  → Дараа нь хүний оператор руу: [HANDOFF_NEEDED]
-  → ШУУД шинэ захиалга авч эхлэхгүй
+  → Дараа нь [HANDOFF_NEEDED]. ШУУД шинэ захиалга авч эхлэхгүй.
+  ⛔ Шүүлтүүрийн хугацаа, нөөц, солилт, эдэлгээний тухай ЭНГИЙН асуулт бол
+  confusion БИШ — "Уучлаарай, ойлголтын зөрүү..." гэж эхлэхгүй, шууд хариул.
+
+▸ ⛔ ШАХАЛТЫН ХОРИГ (маш чухал):
+  Хэрэглэгч мэдээллийн асуулт (үнэ, чанар, хугацаа, зураг, шүүлтүүр) асуувал
+  зөвхөн түүнд нь хариул. Хариулт бүрийн төгсгөлд "утасны дугаар болон
+  төлбөрийн аргыг оруулна уу" гэж ДАВТАН ШААРДАХГҮЙ. Захиалгын талбарыг
+  зөвхөн хэрэглэгч захиалгаа үргэлжлүүлж байгаа үед л асууна.
 
 ▸ МЭДЭЭЛЭЛ / ҮНЭ хайж байгаа:
   Keyword: "үнэ", "хэд", "хэдэн төгрөг", "price", "юу вэ", "ямар юм бэ"
@@ -1898,6 +1993,17 @@ app.post('/webhook', async (req, res) => {
       }
 
       // ═══════════════════════════════════════════════════════
+      // v3.0.1 ЗУРАГНЫ ХҮСЭЛТ — LLM-д хүргэхгүй, шууд зураг/линк
+      // ═══════════════════════════════════════════════════════
+      if (isImageRequest(text)) {
+        console.log(`📷 Image request [${senderId}]: ${text.slice(0, 40)}`);
+        addToHistory(senderId, 'user', text);
+        const sentText = await handleImageRequest(senderId, text);
+        addToHistory(senderId, 'assistant', sentText);
+        continue;
+      }
+
+      // ═══════════════════════════════════════════════════════
       // v3.0 PREMIUM MODE — материал / чанар / бүтэц / үзэмж
       // Canon факт LLM-д даалгахгүй — детерминистик хариулт.
       // Үнэ дурдахгүй, bullet жагсаалтгүй, макро зурагтай.
@@ -1956,6 +2062,14 @@ app.post('/webhook', async (req, res) => {
       try {
         // ── FIRST-CONTACT GREETING ──
         if (isPureGreeting(text)) {
+          // v3.0.1: Цэвэр мэндчилгээ + 60 мин-ээс хуучин 'collecting' state
+          // → хуучин тестийн хаяг/утас ШИНЭ яриаг бохирдуулахгүй
+          const staleOrd = getOrder(senderId);
+          if (staleOrd && (staleOrd.status === 'collecting' || !staleOrd.status)
+              && Date.now() - (staleOrd.updatedAt || 0) > 60 * 60 * 1000) {
+            clearOrder(senderId);
+            console.log(`🧹 Stale order cleared on greeting [${senderId}]`);
+          }
           if (hasRecentGreeting(senderId)) {
             addToHistory(senderId, 'user', text);
             await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
@@ -2053,7 +2167,11 @@ app.post('/webhook', async (req, res) => {
         cleanReply = scrub.text;
 
         // ── v3.0: БЭЛГИЙН МӨР (JS-ээс, LLM-д даалгахгүй) ──
-        cleanReply = withGift(senderId, cleanReply);
+        // v3.0.1: premium хариултад бэлгийн мөр нэмэхгүй (P1 — премиум
+        // мэдрэмжийг зарын мөрөөр эвдэхгүй)
+        if (!premiumNoteForThisTurn) {
+          cleanReply = withGift(senderId, cleanReply);
+        }
 
         await sendDM(senderId, cleanReply);
 
@@ -2373,7 +2491,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '3.0.0',
+  status: '🌸 SkinBloom Bot running', version: '3.0.1',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2400,9 +2518,9 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v3.0.0 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v3.0.1 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram(`🌸 <b>SkinBloom Bot v3.0 асаалаа!</b>
+  await sendTelegram(`🌸 <b>SkinBloom Bot v3.0.1 асаалаа!</b>
 
 <b>🎁 Шинэ — Offer Layer:</b>
 ✅ Бэлгийн мөр JS-ээс автоматаар (LLM-д даалгахгүй)

@@ -527,10 +527,10 @@ const PREMIUM_NOTE = `[СИСТЕМИЙН ЗААВАР — PREMIUM ГОРИМ]
 // 📸 Premium макро зураг. Facebook-д хүрэх public HTTPS URL оруулна.
 // Хоосон бол зураг илгээхгүй — алдаа гарахгүй.
 const PREMIUM_IMAGES = {
-  'Obsidian Black': [],
-  'Pearl White': [],
-  'Slate Gray': [],
-  default: []
+  'Obsidian Black': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/hf_20260728_211753_a7705171-9605-4b04-941d-83fdaa78784c_1.png?v=1785777404],
+  'Pearl White': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/O1CN01EmrIgN22XaxVkNdOW__2567207130-0-cib.jpg?v=1785777441],
+  'Slate Gray': [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/grok-image-80927b7c-95be-45b8-8be6-ac43a5ed262c.jpg?v=1785777469],
+  default: [https://cdn.shopify.com/s/files/1/0787/8960/7670/files/image.jpg?v=1785777258]
 };
 
 async function sendPremiumImages(senderId, color) {

@@ -483,7 +483,11 @@ const PREMIUM_KEYWORDS = [
   // Транскриптээс: "her udaan hereglegdeh" premium гэж танигдаагүй байв.
   'her udaan', 'udaan hereg', 'udaan edel', 'hereglegde', 'edelgee',
   'evderdeg', 'evderh', 'evdreh gui', 'chanartai yu', 'yamar chanar',
-  'yugaar hiisen', 'yamar material', 'butets', 'davhargatai'
+  'yugaar hiisen', 'yamar material', 'butets', 'davhargatai',
+  // v3.0.2: гарал үүслийн Latin ЯЗГУУРУУД — "hanahinh", "haanahiin",
+  // "hanahin" гэх бүх бичлэгийг stem-ээр барина (үг бүрчлэн биш).
+  'hanah', 'haanah', 'khaanah', 'аль улс', 'ali uls', 'ямар улс', 'yamar uls',
+  'гарал', 'garal', 'uildver', 'made in'
 ];
 
 function isPremiumIntent(text) {
@@ -521,7 +525,11 @@ function getPremiumAnswer(text) {
   if (/бүтэц|butets|давхарга|davharga|дотор нь|яаж ажилл|хэрхэн ажилл|шүүлтүүр яаж|филтр яаж/i.test(l)) return PREMIUM_ANSWERS.structure;
   if (/эвдрэх|evdre|evderd|evderh|бат бөх|удаан эдэлгээ|хэр удаан|her udaan|udaan (hereg|edel)|hereglegde|edelgee|баталгаа|batalgaa|warranty|зэвэрдэг/i.test(l)) return PREMIUM_ANSWERS.durability;
   if (/үзэмж|харагдац|ямар харагд|дизайн|design|өнгө нь ямар/i.test(l)) return PREMIUM_ANSWERS.look;
-  if (/хаана үйлдвэр|хаанахын|хятад|hyatad|гарал үүсэл|сертификат/i.test(l)) return PREMIUM_ANSWERS.origin;
+  // v3.0.2: гарал үүсэл — ЯЗГУУРААР (hanah/haanah нь hanahinh, haanahiin,
+  // hanahin бүх бичлэгийг барина). "хаанаас ЗАХИАЛАХ вэ" = худалдан авах
+  // асуулт тул origin руу оруулахгүй (guard).
+  const purchaseCtx = /захиал|zahial|авъя|avya|авах вэ|avah ve|худалдан|hudald/i.test(l);
+  if (!purchaseCtx && /хаана үйлдвэр|хаанах|ha?anah|khaanah|хаанаас ирсэн|ha?anaas irsen|аль улс|ali uls|ямар улс|yamar uls|хятад|hyatad|солонгос|solongos|япон|yapon|japon|герман|german|гарал|garal|үйлдвэрлэ|uildver|made in|сертификат/i.test(l)) return PREMIUM_ANSWERS.origin;
   if (/материал|material|юугаар хийсэн|ямар материал|хуванцар|abs|металл|жинтэй/i.test(l)) return PREMIUM_ANSWERS.material;
   return null;
 }
@@ -2491,7 +2499,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '3.0.1',
+  status: '🌸 SkinBloom Bot running', version: '3.0.2',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2518,9 +2526,9 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v3.0.1 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v3.0.2 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram(`🌸 <b>SkinBloom Bot v3.0.1 асаалаа!</b>
+  await sendTelegram(`🌸 <b>SkinBloom Bot v3.0.2 асаалаа!</b>
 
 <b>🎁 Шинэ — Offer Layer:</b>
 ✅ Бэлгийн мөр JS-ээс автоматаар (LLM-д даалгахгүй)

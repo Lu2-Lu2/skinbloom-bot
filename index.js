@@ -105,6 +105,25 @@ app.post('/telegram', async (req, res) => {
     return;
   }
 
+  // ── v3.1: /handoff <userId> ── Ботыг тухайн хэрэглэгчээс ГАРААР зогсоох
+  // Менежер AI-ийн алдаа ажигласан үед шууд хөндлөнгөөс орох боломж.
+  if (text.startsWith('/handoff')) {
+    const parts = text.trim().split(/\s+/);
+    const userId = parts[1];
+    if (!userId) {
+      await sendTelegram('⚠️ Формат: <code>/handoff [userId]</code>\nЖишээ: <code>/handoff 24473552475676679</code>\n\nID-г захиалга/handoff мэдэгдлээс хуулна.');
+      return;
+    }
+    if (humanHandoff.has(userId)) {
+      await sendTelegram(`ℹ️ <code>${userId}</code> аль хэдийн handoff горимд байна — bot энэ хэрэглэгчид хариулахгүй байгаа.`);
+      return;
+    }
+    addHandoff(userId);
+    await sendTelegram(`⏸ <b>Handoff ГАРААР асаалаа</b>\n\n👤 ID: <code>${userId}</code>\n🤖 Bot энэ хэрэглэгчид ХАРИУЛАХАА ЗОГСЛОО.\n\n💬 Одоо та хариулна:\n• Messenger inbox-оос шууд бичих, эсвэл\n• <code>/dm ${userId} [мессеж]</code>\n\n▶️ Ботыг буцааж асаах: <code>/release ${userId}</code>`);
+    console.log(`⏸ Manual handoff via Telegram for ${userId}`);
+    return;
+  }
+
   // ── /dm <userId> <message> ── Өөрийн бичсэн мессеж шууд илгээх
   if (text.startsWith('/dm ')) {
     const remaining = text.slice(4).trim();
@@ -162,11 +181,13 @@ app.post('/telegram', async (req, res) => {
 
 <b>Handoff удирдлага:</b>
 <code>/list</code> — handoff горимд байгаа хүмүүс
-<code>/release [userId]</code> — handoff унтраах
+<code>/handoff [userId]</code> — ботыг ГАРААР зогсоох (та хариулна)
+<code>/release [userId]</code> — ботыг буцааж асаах
 
 <b>Хэрэглэгчид мессеж илгээх:</b>
 <code>/send [userId] [1|2|3]</code> — Draft variant сонгож илгээх
 <code>/dm [userId] [text]</code> — Өөрийн бичсэн мессеж илгээх
+⚠️ /dm нь ботыг ЗОГСООХГҮЙ — эхлээд /handoff хий
 <code>/draft [userId]</code> — Шинэ 3 draft бэлдэх
 
 <b>Тусламж:</b>
@@ -1052,6 +1073,24 @@ function shouldHandoffForAttachment(attachments) {
   return ['image', 'video', 'audio', 'file'].includes(type);
 }
 
+// ── v3.1: ОЙЛГОМЖГҮЙ ХАРИУЛТЫН ТОР ──
+// LLM ойлгоогүй үедээ [HANDOFF_NEEDED] tag тавихын оронд таамаглаж хариулах
+// тохиолдол бий (транскриптээр батлагдсан). Детерминистик хамгаалалт:
+// 2 удаа ДАРААЛАН ойлгомжгүй хариулт гарвал — 2 дахийг илгээхийн оронд
+// шууд менежер рүү шилжүүлнэ.
+const unclearStreak = new Map(); // senderId → тоо
+const UNCLEAR_REPLY_RX = /уучлаарай|ойлгосонгүй|ойлгомжгүй|сайн ойлгохгүй|ойлголтын зөрүү|дахин тайлбарла|тодруулна уу\?$/i;
+
+function trackUnclear(senderId, cleanReply) {
+  if (UNCLEAR_REPLY_RX.test(cleanReply)) {
+    const n = (unclearStreak.get(senderId) || 0) + 1;
+    unclearStreak.set(senderId, n);
+    return n;
+  }
+  unclearStreak.delete(senderId);
+  return 0;
+}
+
 async function notifyTelegramUGC(senderId, userText) {
   const msg = `📸 <b>UGC / INFLUENCER хүсэлт!</b>
 
@@ -1611,6 +1650,10 @@ Placeholder [Өнгө], [Хаяг], [Утас] хэлбэрээр БИЧИХГҮ
 7. HANDOFF — ОПЕРАТОР РУУ ШИЛЖҮҮЛЭХ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ЭДГЭЭР ТОХИОЛДОЛД ШУУД [HANDOFF_NEEDED]:
+• ⚠️ ХАМГИЙН ЧУХАЛ: Хэрэглэгчийн мессежийг ОЙЛГООГҮЙ, эсвэл хариултдаа
+  ИТГЭЛГҮЙ байвал — таамаглаж хариулахгүй, худал зохиохгүй. Шууд:
+  "Таны асуултад оновчтой хариулахын тулд манай менежерт шилжүүлье 🌸 [HANDOFF_NEEDED]"
+  Ойлгомжгүй асуултад буруу хариулах нь хэрэглэгч алдах шууд эрсдэл.
 • Гомдол / буцаалт / refund
 • Нарийн техникийн асуулт хариулж чадахгүй бол
 • UGC / influencer / collab
@@ -2181,6 +2224,20 @@ app.post('/webhook', async (req, res) => {
           cleanReply = withGift(senderId, cleanReply);
         }
 
+        // ── v3.1: ОЙЛГОМЖГҮЙ ХАРИУЛТЫН ТОР ──
+        // 2 удаа дараалан ойлгомжгүй хариулт → 2 дахийг илгээхгүй, handoff.
+        if (!isHandoff && !isOrder && !isCOD && !isBank) {
+          const streak = trackUnclear(senderId, cleanReply);
+          if (streak >= 2) {
+            console.log(`🤷 Unclear streak=${streak} → handoff [${senderId}]`);
+            unclearStreak.delete(senderId);
+            addHandoff(senderId);
+            await sendDMWithHumanAgent(senderId, 'Таны асуултад илүү оновчтой хариулахын тулд манай менежерт шилжүүллээ 🌸 Удахгүй тантай холбогдох болно.');
+            await notifyTelegramHandoff(senderId, `[UNCLEAR x2 — бот ойлгосонгүй] ${text}`);
+            continue;
+          }
+        }
+
         await sendDM(senderId, cleanReply);
 
         // ── Захиалга баталгаажсан үед ──
@@ -2499,7 +2556,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '3.0.2',
+  status: '🌸 SkinBloom Bot running', version: '3.1.0',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2526,9 +2583,9 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v3.0.2 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v3.1.0 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram(`🌸 <b>SkinBloom Bot v3.0.2 асаалаа!</b>
+  await sendTelegram(`🌸 <b>SkinBloom Bot v3.1.0 асаалаа!</b>
 
 <b>🎁 Шинэ — Offer Layer:</b>
 ✅ Бэлгийн мөр JS-ээс автоматаар (LLM-д даалгахгүй)

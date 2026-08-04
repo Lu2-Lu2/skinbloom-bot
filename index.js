@@ -236,6 +236,31 @@ function getOrder(senderId) {
   return activeOrders.get(senderId);
 }
 
+// ── STALE STATE GUARD (NEW v2.9.4) ──
+// `/tmp/active_orders.json` нь Render restart хүртэл үлддэг. v2.9.3-д нэг удаа
+// `orderType: 'FILTER'` тавигдвал ТЭР ХЭРЭГЛЭГЧИД ҮҮРД үлдэж, дараа нь ирсэн
+// энгийн "үнэ хэд вэ" асуулт Бэлгийн Багцын hook-д хүрэхгүй, LLM руу унадаг байв.
+// Одоо 6 цагаас хойш идэвхгүй байсан цуглуулгын state-ийг "хуучирсан" гэж үзнэ.
+const ORDER_CONTEXT_TTL_MS = 6 * 60 * 60 * 1000;
+
+function isStaleContext(order) {
+  if (!order || !order.updatedAt) return false;
+  if (order.status === 'placed') return false; // баталгаажсан захиалга хуучирдаггүй
+  return (Date.now() - order.updatedAt) > ORDER_CONTEXT_TTL_MS;
+}
+
+// Идэвхтэй (хуучраагүй) state буцаана — хуучирсан бол цэвэр объект
+function getLiveOrder(senderId) {
+  const o = getOrder(senderId);
+  if (!o) return {};
+  if (isStaleContext(o)) {
+    console.log(`🧹 Stale order context цэвэрлэв [${senderId}]`);
+    clearOrder(senderId);
+    return {};
+  }
+  return o;
+}
+
 function clearOrder(senderId) {
   activeOrders.delete(senderId);
   saveActiveOrders();
@@ -502,6 +527,17 @@ const FILTER_NO_SHOWER_ANSWER = `Ойлголоо 🌸 Нөөц шүүлтүүр
 🚚 Хүргэлт үнэгүй
 
 Аль өнгийг нь харах уу? 🤍🩶🖤`;
+
+// 4b) Шүршүүр аваагүй ч ШҮҮЛТҮҮРИЙН ҮНИЙГ ДАХИН асуувал (NEW v2.9.4)
+// ⚠️ Тодруулгыг ХЭЗЭЭ Ч 2 дахь удаа асуухгүй. Хүн үнэ асуусан бол үнээ авах ёстой —
+// эс тэгвэл хариулт аваагүй хэрэглэгч яриаг орхино (v2.9.3-ын бодит алдаа).
+const FILTER_PRICE_NON_OWNER = `Нөөц шүүлтүүр тусдаа — 44'900₮ ➜ 29'900₮ 🔥 (1 ширхэг)
+🚚 Хүргэлт үнэгүй
+
+Энэ нь SkinBloom шүршүүрийн сэлбэг шүүлтүүр — 3–6 сард нэг удаа солино.
+Шүршүүр өөрөө Бэлгийн Багцаар 199'900₮, шүүлтүүр нь дотор нь суурилуулсан ирнэ.
+
+Аль нь танд илүү сонирхолтой вэ? 🌸`;
 
 // 5) Шүүлтүүр авахаа зөвшөөрсний дараа — хаяг асуух
 const FILTER_ADDRESS_ASK = `Тэгье 🌸 Хүргэлтийн бүрэн хаягаа явуулна уу.
@@ -1554,7 +1590,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   ❌ "199,900₮" биш
   ❌ "199900₮" биш
   ✅ Хуучин үнийг зураасаар БИШ, сумаар: "269'000₮ ➜ 199'900₮"
-  ❌ "~~269'000₮~~" ХЭЗЭЭ Ч бичихгүй — Messenger энэ тэмдэгтийг зурааслаж чаддаггүй, хэрэглэгчид яг "~~" гэж харагдана.
+  ⛔ Хуучин үнийг ДАРААСАН/ЗУРААСАН хэлбэрээр тэмдэглэх markdown тэмдэгт (давхар тильд) ХЭРЭГЛЭХГҮЙ. Messenger үүнийг рендерлэдэггүй — хэрэглэгчид түүхий тэмдэгт харагдана. Зөвхөн ➜ сум ашиглана.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 4. ХАРИУЛТЫН ЗАГВАРУУД
@@ -1747,7 +1783,7 @@ CE дугаар: HX240303050484"
 ❌ "Rose Red" / "криминал улаан" → ✅ "Slate Gray (дотор час улаан / crimson цагираг)"
 ❌ "шүршүүр хийх" → ✅ "усанд орох"
 ❌ "199,900₮" → ✅ "199'900₮"
-❌ "~~269'000₮~~" → ✅ "269'000₮ ➜ 199'900₮"
+❌ Хуучин үнийг дараасан markdown тэмдэгт (давхар тильд) → ✅ "269'000₮ ➜ 199'900₮"
 ❌ "Хонгконг" / "Хятад" / "Made in China" → ✅ "Герман улсаас гаралтай, Европын CE стандарт"
 ❌ "запас" → ✅ "нөөц" (запас зөвхөн хэрэглэгчийн үгийг таних дотоод keyword)
 ❌ 5+ мөрийн хариулт (хэрэв асуугаагүй бол) → ✅ богино, дараа нь дэлгэрнэ
@@ -2010,7 +2046,10 @@ app.post('/webhook', async (req, res) => {
           console.log(`🧴 Filter: шүршүүр аваагүй [${senderId}]`);
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', FILTER_NO_SHOWER_ANSWER);
-          setOrder(senderId, { ...filterCtx, filterStage: null, orderType: 'BUNDLE', status: 'collecting' });
+          setOrder(senderId, {
+            ...filterCtx, filterStage: null, filterOwner: false, filterAsked: true,
+            orderType: 'BUNDLE', status: 'collecting'
+          });
           await sendDM(senderId, FILTER_NO_SHOWER_ANSWER);
           continue;
         }
@@ -2019,10 +2058,20 @@ app.post('/webhook', async (req, res) => {
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', FILTER_PRICE_ANSWER);
           setOrder(senderId, {
-            ...filterCtx, filterStage: 'price_shown', filterOwner: true,
+            ...filterCtx, filterStage: 'price_shown', filterOwner: true, filterAsked: true,
             orderType: 'FILTER', qty: filterCtx.qty || 1, status: 'collecting'
           });
           await sendDM(senderId, FILTER_PRICE_ANSWER);
+          continue;
+        }
+        // Хэрэглэгч тийм/үгүй гэлгүй ҮНИЙГ ДАХИН асуувал → тодруулгыг давтахгүй,
+        // шууд үнээ өгнө (v2.9.3-д энд гацаж, хэрэглэгч хариулт авалгүй явсан).
+        if (hasFilterWord(text) && isPriceQuestion(text)) {
+          console.log(`🧴 Filter: үнэ дахин асуув → тодруулга давтахгүй [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_PRICE_NON_OWNER);
+          setOrder(senderId, { ...filterCtx, filterStage: 'price_shown', filterAsked: true, orderType: 'FILTER', qty: filterCtx.qty || 1, status: 'collecting' });
+          await sendDM(senderId, FILTER_PRICE_NON_OWNER);
           continue;
         }
         // Тодорхойгүй хариулт → stage-ээ цэвэрлээд LLM-д даатгана (гацахгүй)
@@ -2165,9 +2214,10 @@ app.post('/webhook', async (req, res) => {
       // гэсэн асуулт Бэлгийн Багцын үнээр хариулагдана.
       // ═══════════════════════════════════════════════════════
       if (hasFilterWord(text) && (isPriceQuestion(text) || isBuyIntent(text))) {
-        const fState = getOrder(senderId) || {};
-        // Аль хэдийн "шүршүүрээ авсан" гэдгээ хэлсэн бол дахин асуухгүй
-        if (fState.filterOwner) {
+        const fState = getLiveOrder(senderId);
+
+        // (a) Шүршүүр эзэмшдэг гэдгээ хэлсэн → шууд үнэ
+        if (fState.filterOwner === true) {
           console.log(`🧴 Filter intent (эзэмшигч мэдэгдсэн) [${senderId}]`);
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', FILTER_PRICE_ANSWER);
@@ -2176,11 +2226,29 @@ app.post('/webhook', async (req, res) => {
             qty: fState.qty || 1, status: 'collecting'
           });
           await sendDM(senderId, FILTER_PRICE_ANSWER);
+
+        // (b) Тодруулгыг аль хэдийн НЭГ УДАА асуусан → ДАХИН АСУУХГҮЙ, үнээ өгнө.
+        //     v2.9.3-ын алдаа: энд дахин тодруулга асууж, хэрэглэгч хариулт
+        //     авалгүй яриаг орхидог байв.
+        } else if (fState.filterAsked) {
+          console.log(`🧴 Filter intent (тодруулга давтахгүй) [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_PRICE_NON_OWNER);
+          setOrder(senderId, {
+            ...fState, filterStage: 'price_shown', orderType: 'FILTER',
+            qty: fState.qty || 1, status: 'collecting'
+          });
+          await sendDM(senderId, FILTER_PRICE_NON_OWNER);
+
+        // (c) Анх удаа → эзэмшлийн тодруулга (ЗӨВХӨН НЭГ УДАА)
         } else {
           console.log(`🧴 Filter intent → эзэмшлийн тодруулга [${senderId}]: ${text.slice(0, 60)}`);
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', FILTER_OWNERSHIP_ASK);
-          setOrder(senderId, { ...fState, filterStage: 'ownership_asked', status: fState.status || 'collecting' });
+          setOrder(senderId, {
+            ...fState, filterStage: 'ownership_asked', filterAsked: true,
+            status: fState.status || 'collecting'
+          });
           await sendDM(senderId, FILTER_OWNERSHIP_ASK);
         }
         markGreeting(senderId);
@@ -2188,18 +2256,30 @@ app.post('/webhook', async (req, res) => {
       }
 
       // ═══════════════════════════════════════════════════════
-      // 11) ҮНИЙН АСУУЛТ (NEW v2.9.3) — Бэлгийн Багцын детерминистик hook
-      // ⚠️ Захиалга аль хэдийн баталгаажсан бол хөндөхгүй (LLM-д үлдээнэ).
+      // 11) ҮНИЙН АСУУЛТ (v2.9.4 — ЗАСВАРЛАСАН)
+      // v2.9.3-ын алдаа: `orderType !== 'FILTER'` гэсэн нөхцөл байсан тул
+      // нэг удаа шүүлтүүрийн контекстэд орсон хэрэглэгчийн дараагийн бүх
+      // үнийн асуулт LLM руу уначихдаг байв → LLM өөрөө hook зохиож,
+      // Messenger-т эвдэрдэг markdown-той хуучин текст явдаг байсан.
+      // Одоо: үнийн асуулт LLM руу ХЭЗЭЭ Ч унахгүй.
       // ═══════════════════════════════════════════════════════
-      const priceState = getOrder(senderId) || {};
+      const priceState = getLiveOrder(senderId);
       if (isPriceQuestion(text)
-        && priceState.status !== 'placed'
-        && priceState.orderType !== 'FILTER'
-        && !hasFilterWord(text)) {
-        console.log(`💰 Price question [${senderId}]: ${text.slice(0, 60)}`);
+        && !hasFilterWord(text)
+        && priceState.status !== 'placed') {
+
+        const inFilterContext = priceState.orderType === 'FILTER' || Boolean(priceState.filterStage);
+        let priceReply;
+        if (inFilterContext) {
+          priceReply = priceState.filterOwner === true ? FILTER_PRICE_ANSWER : FILTER_PRICE_NON_OWNER;
+        } else {
+          priceReply = PRICE_ANSWER;
+        }
+
+        console.log(`💰 Price question [${senderId}] (${inFilterContext ? 'FILTER' : 'BUNDLE'}): ${text.slice(0, 60)}`);
         addToHistory(senderId, 'user', text);
-        addToHistory(senderId, 'assistant', PRICE_ANSWER);
-        await sendDM(senderId, PRICE_ANSWER);
+        addToHistory(senderId, 'assistant', priceReply);
+        await sendDM(senderId, priceReply);
         markGreeting(senderId);
         continue;
       }
@@ -2332,6 +2412,26 @@ app.post('/webhook', async (req, res) => {
 
         if (!cleanReply) {
           cleanReply = 'Таны захиалгыг хүлээн авлаа ✅';
+        }
+
+        // ── v2.9.4 GUARD #0: MESSENGER MARKDOWN ЦЭВЭРЛЭГЭЭ ──
+        // Messenger нь markdown-г рендерлэдэггүй тул `~~`, `**`, `__` тэмдэгтүүд
+        // хэрэглэгчид ТҮҮХИЙГЭЭР харагдана. Ямар ч замаар LLM гаргавал энд таслана.
+        cleanReply = cleanReply
+          .replace(/~~+/g, '')
+          .replace(/\*\*/g, '')
+          .replace(/__/g, '')
+          .replace(/[ \t]{2,}/g, ' ')
+          .trim();
+
+        // ── v2.9.4 GUARD #0b: LLM ӨӨРӨӨ ҮНИЙН HOOK ЗОХИОВОЛ ──
+        // 269'000 ба 199'900 хоёулаа нэг мессежид байвал энэ нь үнийн танилцуулга.
+        // Тоо/формат гуйвуулахаас сэргийлж canonical текстээр солино.
+        if (!isOrder && !isCOD && !isBank
+          && /269[\s',.]?000/.test(cleanReply)
+          && /199[\s',.]?900/.test(cleanReply)) {
+          console.log(`🛑 LLM-ийн зохиосон үнийн hook → canonical текстээр солив [${senderId}]`);
+          cleanReply = PRICE_ANSWER;
         }
 
         // ── v2.9.2 GUARD #1: ДАВХАР GREETING ──
@@ -2707,7 +2807,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.3',
+  status: '🌸 SkinBloom Bot running', version: '2.9.4',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2734,7 +2834,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.3 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.4 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.3 асаалаа!</b>\n\n🆕 <b>Шинэ (v2.9.3):</b>\n✅ Үнэ асуухад детерминистик hook (JS-ээс)\n✅ Шүүлтүүрийн үнэ хэлэхээс өмнө "шүршүүр авсан уу?" тодруулга\n✅ Twin Pack / Family Pack бүрэн устгав — зөвхөн 1ш 29\'900₮\n✅ Латин бичлэг (une hed ve, filter avya, haanahiih ve) танина\n✅ Гарал үүсэл: Герман, Европын CE стандарт\n✅ Messenger-т эвдэрдэг ~~зураас~~ → ➜ сум болов\n\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.1:</b> Шүүлтүүр "үнэгүй" сигнал хасагдав\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.4 асаалаа!</b>\n\n🔧 <b>Засвар (v2.9.4) — бодит 3 алдаа:</b>\n✅ Үнийн асуулт LLM руу унахаа болив (sticky FILTER state)\n✅ Эзэмшлийн тодруулга 2 дахь удаа АСУУХГҮЙ — үнээ өгнө\n✅ Messenger-т эвдэрдэг markdown авто-цэвэрлэгээ\n✅ 6 цагаас хойш хуучирсан order context авто-цэвэрлэнэ\n\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

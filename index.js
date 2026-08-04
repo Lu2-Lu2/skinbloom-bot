@@ -207,8 +207,9 @@ function removeHandoff(senderId) {
 }
 
 // ── ACTIVE ORDERS STATE (NEW v2.8.0) ──
-// senderId → { color, qty, address, entranceCode, phone, payment, total, placedAt, status }
+// senderId → { orderType, color, qty, address, entranceCode, phone, payment, total, placedAt, status }
 // status: 'collecting' | 'placed' | 'edit_pending' | 'cancel_reason_pending' | 'cancelled'
+// orderType (v2.9.3): 'BUNDLE' (default) | 'FILTER'
 const ACTIVE_ORDERS_FILE = path.join('/tmp', 'active_orders.json');
 const activeOrders = new Map();
 
@@ -242,6 +243,21 @@ function clearOrder(senderId) {
 
 loadActiveOrders();
 
+// ── ҮНИЙН ТОГТМОЛ (NEW v2.9.3) ──
+// Захиалгын нийт дүнг ХАА САЙГҮЙ энэ хоёр тогтмолоос авна.
+// Өмнө нь 199900 гэсэн тоо 3 газар hardcode хийгдсэн байсан тул
+// зөвхөн нөөц шүүлтүүрийн захиалга бүрэн буруу дүнгээр бодогдох байсан.
+const BUNDLE_UNIT_PRICE = 199900;
+const FILTER_UNIT_PRICE = 29900;
+
+function unitPriceFor(order) {
+  return order && order.orderType === 'FILTER' ? FILTER_UNIT_PRICE : BUNDLE_UNIT_PRICE;
+}
+
+function formatMNT(n) {
+  return Number(n).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+}
+
 // ── GREETING ANTI-REPEAT (NEW v2.8.0) ──
 const greetingTimestamps = new Map(); // senderId → timestamp
 const GREETING_COOLDOWN_MS = 5 * 60 * 1000;
@@ -271,6 +287,252 @@ const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI тусла�
 📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
 
 Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+
+// =====================================================================
+// ТЕКСТ НОРМАЛЧЛАЛ — ЛАТИН БИЧЛЭГИЙГ ТАНИХ СУУРЬ (NEW v2.9.3)
+// ---------------------------------------------------------------------
+// Хэрэглэгчид Монгол үгээ Латинаар бичдэг (haanahiih ve, filter avya,
+// une hed ve). Өмнөх хувилбарууд .includes()-ээр түүхий текст шалгадаг
+// байсан тул "за" гэдэг үг "захиалга" дотор таарах мэтийн ХУДАЛ
+// таарц үүсгэдэг байв. Одоо:
+//   • normWords() — цэг таслал, emoji-г арилгаж, үгсийг зайгаар тусгаарлана
+//   • hasAnyWord() — БҮТЭН үгээр таарна (substring биш)
+//   • hasAnyStem() — үгийн ЭХЛЭЛЭЭР таарна (авъя / авах / авмаар)
+//   • hasAnyPhrase() — олон үгтэй хэллэгт зориулж normalized текст дотор хайна
+// =====================================================================
+// Латин ↔ Кирилл ХОЛИМОГ бичлэг (homoglyph). Хэрэглэгчид гараа сольж амжаагүйгээс
+// "aваагүй" (эхний үсэг Латин a), "тиiм", "cайн" гэж бичдэг. Нүдээр ижил боловч
+// код нь өөр тул үг таарахгүй болдог. Тухайн ҮГ дотор ядаж нэг Кирилл үсэг байвал
+// л Латин ижил дүрст үсгүүдийг Кирилл рүү хөрвүүлнэ — цэвэр Латин үгийг хөндөхгүй.
+const HOMOGLYPH_MAP = {
+  a: 'а', b: 'ь', c: 'с', e: 'е', h: 'н', k: 'к', m: 'м',
+  o: 'о', p: 'р', t: 'т', x: 'х', y: 'у', i: 'и', 3: 'з'
+};
+const CYRILLIC_RX = /[\u0400-\u04FF]/;
+
+function fixHomoglyphs(token) {
+  if (!CYRILLIC_RX.test(token)) return token;      // цэвэр Латин үг — хөндөхгүй
+  if (!/[a-z0-9]/.test(token)) return token;       // цэвэр Кирилл үг — хөндөхгүй
+  return token.replace(/[abcehkmoptxyi3]/g, ch => HOMOGLYPH_MAP[ch] || ch);
+}
+
+function normWords(text) {
+  const cleaned = String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  if (!cleaned) return ' ';
+  return ' ' + cleaned.split(' ').map(fixHomoglyphs).join(' ') + ' ';
+}
+
+function hasAnyWord(text, words) {
+  const t = normWords(text);
+  return words.some(w => t.includes(' ' + w + ' '));
+}
+
+function hasAnyStem(text, stems) {
+  const toks = normWords(text).trim().split(' ').filter(Boolean);
+  return toks.some(tok => stems.some(s => tok.startsWith(s)));
+}
+
+function hasAnyPhrase(text, phrases) {
+  const t = normWords(text);
+  return phrases.some(p => t.includes(' ' + p + ' ') || t.includes(' ' + p + ''));
+}
+
+// ── ЗӨВШӨӨРӨЛ / ТАТГАЛЗАЛ (NEW v2.9.3) — Кирилл + Латин ──
+// ⚠️ ДАРААЛАЛ ЧУХАЛ: ҮРГЭЛЖ isNegativeAnswer()-ийг ЭХЭЛЖ шалгана.
+// Учир нь "авахгүй", "аваагүй" зэрэг нь "ав" гэсэн эерэг үндэстэй тул
+// эерэгийг эхэлж шалгавал татгалзлыг зөвшөөрөл гэж уншина.
+const AFFIRM_WORDS = [
+  'тийм', 'тиймээ', 'тиймэ', 'тийме', 'тиймээе', 'тиймэээ',
+  'tiim', 'tiimee', 'tim', 'time', 'tiym', 'tiimээ',
+  'за', 'заа', 'зaa', 'za', 'zaa', 'ok', 'okay', 'oke', 'оке', 'окей', 'okey',
+  'yes', 'yep', 'yeah', 'yee', 'ya', 'yaa',
+  'зөв', 'зов', 'zuv', 'zov', 'zuv ee',
+  'мэдээж', 'medeej', 'мэдээжийн', 'medeejiin',
+  'авсан', 'авсанаа', 'авчихсан', 'авъсан', 'avsan', 'awsan', 'avchihsan', 'avsn',
+  'байгаа', 'baigaa', 'baigа', 'бий', 'bii', 'бн', 'bn',
+  'тэгье', 'тэгэе', 'тэгнэ', 'tegye', 'tegee', 'tegne',
+  'болно', 'bolno', 'болъё', 'boloo', 'болж байна'
+];
+
+const NEGATIVE_WORDS = [
+  'үгүй', 'угуй', 'үгүйээ', 'ugui', 'ugvi', 'ugii', 'ugvy', 'ugue',
+  'no', 'nope', 'not',
+  'биш', 'bish', 'бишээ',
+  'аваагүй', 'аваагуй', 'авагүй', 'авахгүй', 'аваахгүй',
+  'avaagui', 'avaagvi', 'awaagui', 'avagui', 'avahgui', 'avahgvi',
+  'байхгүй', 'байхгуй', 'baihgui', 'baihgvi', 'baikhgui',
+  'алга', 'alga', 'хараахан', 'haraahan', 'kharaakhan',
+  'одоохондоо', 'odoohondoo', 'дараа', 'daraa'
+];
+
+const BUY_STEMS = [
+  'авъя', 'авья', 'авая', 'авъё', 'авмаар', 'авах', 'авна', 'авч', 'авчих', 'авъяа',
+  'avya', 'avia', 'awya', 'awia', 'avmaar', 'avah', 'avakh', 'avna', 'avch',
+  'захиал', 'zahial', 'zakhial', 'zahyal',
+  'худалдан', 'hudaldan', 'khudaldan', 'hudaldaj',
+  'order', 'оrder', 'хүргүүл', 'hurguul', 'khurguul'
+];
+
+function isNegativeAnswer(text) {
+  return hasAnyWord(text, NEGATIVE_WORDS);
+}
+
+function isAffirmativeAnswer(text) {
+  if (isNegativeAnswer(text)) return false;
+  return hasAnyWord(text, AFFIRM_WORDS);
+}
+
+function isBuyIntent(text) {
+  if (isNegativeAnswer(text)) return false;
+  return hasAnyStem(text, BUY_STEMS);
+}
+
+// ── ШҮҮЛТҮҮР ИНТЕНТ (NEW v2.9.3) ──
+// "Шүүлтүүр үнэ?" / "filter avya" / "zapas avya" гэх мэт — үнэ ХЭЛЭХЭЭС ӨМНӨ
+// "Та манай шүршүүрийг худалдан авсан уу?" тодруулга явуулна.
+const FILTER_STEMS = [
+  'шүүлтүүр', 'шуултуур', 'шүлтүүр', 'шүүлтур', 'шүүлтүр', 'шүүлт', 'шүлт',
+  'филтер', 'филтр', 'пилтер', 'пилтр', 'фильтр',
+  'карбон', 'нүүрс',
+  'shuultuur', 'shuultur', 'shultuur', 'shuulteer', 'shvvltvvr', 'shuult', 'shult',
+  'filter', 'filtr', 'filtir', 'pilter', 'piltr', 'pilt',
+  'karbon', 'carbon', 'acf',
+  'запас', 'zapas', 'zapass'
+];
+
+function hasFilterWord(text) {
+  return hasAnyStem(text, FILTER_STEMS);
+}
+
+// ── ҮНИЙН АСУУЛТ (NEW v2.9.3) ──
+// "хэдэн хоног", "хэдэн ширхэг", "хүргэлт үнэгүй юу" зэргийг ХАСНА —
+// эдгээр нь үнийн асуулт БИШ.
+const PRICE_STEMS = ['үнэ', 'унэ', 'үний', 'уний', 'үнэт', 'унэт', 'үнээ',
+  'une', 'unii', 'unee', 'unet', 'price', 'прайс', 'өртөг', 'ortog', 'ortg'];
+const PRICE_HED_STEMS = ['хэд', 'хед', 'hed', 'khed'];
+const PRICE_EXCLUDE_TOKENS = ['үнэгүй', 'унэгүй', 'унэгуй', 'үнэгуй', 'unegui', 'unegvi', 'unegvy'];
+// ⚠️ Эдгээр нь ҮГИЙН ЭХЛЭЛЭЭР таарна (stem). "сар" нь "сард", "сарын"-г ч барина.
+const PRICE_CONTEXT_BLOCKER_STEMS = [
+  'хоног', 'honog', 'khonog', 'өдөр', 'өдр', 'odor', 'udur', 'цаг', 'tsag',
+  'сар', 'sar', 'минут', 'minut', 'удаа', 'udaa',
+  'ширхэг', 'shirheg', 'shirhek', 'давхар', 'davhar', 'жил', 'jil',
+  'солих', 'solih', 'удах'
+];
+
+function isPriceQuestion(text) {
+  const t = normWords(text);
+  const toks = t.trim().split(' ').filter(Boolean);
+
+  const strong = toks.some(tok =>
+    !PRICE_EXCLUDE_TOKENS.some(x => tok.startsWith(x)) &&
+    PRICE_STEMS.some(s => tok.startsWith(s))
+  );
+  if (strong) return true;
+
+  const hed = toks.some(tok => PRICE_HED_STEMS.some(s => tok.startsWith(s)));
+  if (!hed) return false;
+  if (toks.some(tok => PRICE_CONTEXT_BLOCKER_STEMS.some(b => tok.startsWith(b)))) return false;
+  return true;
+}
+
+// ── ГАРАЛ ҮҮСЛИЙН АСУУЛТ (NEW v2.9.3) ──
+// ⚠️ "хаана" гэсэн ганц үгийг ОРУУЛААГҮЙ — тэр нь "танай дэлгүүр хаана байдаг вэ"
+// гэсэн handoff хүсэлттэй мөргөлдөнө.
+const ORIGIN_PHRASES = [
+  'аль улс', 'аль улсын', 'аль улсынх', 'аль улсых', 'али улс', 'аль улсынхи',
+  'ali uls', 'ali ulsiin', 'ali ulsih', 'ali ulsiih',
+  'ямар улс', 'yamar uls', 'yamr uls',
+  'хаанахийх', 'хаанахих', 'хаанахийн', 'хаанийх', 'хаанхийх', 'хаанах', 'хаанахи',
+  'haanahiih', 'haanahih', 'haanahiin', 'haanihiih', 'hanahiih', 'haanah', 'khaanakhiikh',
+  'хаана үйлдвэр', 'хаана хийсэн', 'хаана бүтээ', 'хаанаас ирсэн', 'хаанаас авдаг',
+  'хаанаас оруул', 'хаанаас ирдэг',
+  'haana uildver', 'haana hiisen', 'haanaas irsen', 'haanaas oruul', 'haanaas irdeg',
+  'гарал үүсэл', 'гарлын', 'garal uusel', 'garal usel', 'garliin',
+  'үйлдвэрлэгч', 'үйлдвэрлэсэн', 'үйлдвэр нь', 'uildverlegch', 'uildverlesen',
+  'made in', 'мэйд ин', 'мейд ин',
+  'хятад', 'хятадын', 'хятадынх', 'hyatad', 'hyatadiin', 'hitad', 'china',
+  'герман', 'german', 'germany', 'европ', 'evrop', 'europe', 'yavropiin',
+  'ce стандарт', 'се стандарт', 'сертификат', 'sertifikat', 'certificate',
+  'ямар брэнд', 'yamar brend'
+];
+
+function isOriginQuestion(text) {
+  const t = normWords(text);
+  return ORIGIN_PHRASES.some(p => t.includes(' ' + p) || t.includes(p + ' '));
+}
+
+// =====================================================================
+// ДЕТЕРМИНИСТИК ХАРИУЛТЫН ТЕКСТ (NEW v2.9.3)
+// ---------------------------------------------------------------------
+// Эдгээр текстийг LLM ХЭЗЭЭ Ч бичихгүй — JS-ээс яг ийм хэлбэрээр явна.
+// ⚠️ Messenger markdown РЕНДЕРЛЭДЭГГҮЙ: `~~текст~~` нь хэрэглэгчид яг
+//    `~~текст~~` гэж харагдана. Тиймээс хаа сайгүй `➜` сум ашиглана.
+// =====================================================================
+
+// 1) ҮНЭ асуусан үед — Бэлгийн Багцын үндсэн hook
+const PRICE_ANSWER = `Бэлгийн Багц 269'000₮ ➜ 199'900₮ · 69'100₮ хэмнэнэ 🔥
+
+🎁 2 нэмэлт бүтээгдэхүүн бэлгэнд
+🚚 Хүргэлт үнэгүй
+🎨 3 өнгөний сонголт
+
+Дэлгэрэнгүй мэдэх үү, эсвэл өнгө сонгох уу? 🌸`;
+
+// 2) ШҮҮЛТҮҮР — үнэ хэлэхээс ӨМНӨХ заавал тодруулга
+const FILTER_OWNERSHIP_ASK = `Нөөц шүүлтүүрийн талаар уу? 🌸
+
+Та манай SkinBloom шүршүүрийг худалдан авсан уу?`;
+
+// 3) ШҮҮЛТҮҮРИЙН ҮНЭ — зөвхөн тодруулгын ДАРАА
+const FILTER_PRICE_ANSWER = `44'900₮ ➜ 29'900₮ 🔥 (1ш Нөөц Шүүлтүүр)
+🚚 Хүргэлт үнэгүй
+
+Та яг одоо гэртээ хүргүүлээд авах уу?`;
+
+// 4) Шүршүүр аваагүй хүнд — шүүлтүүр дангаараа хэрэггүй
+const FILTER_NO_SHOWER_ANSWER = `Ойлголоо 🌸 Нөөц шүүлтүүр нь зөвхөн SkinBloom шүршүүрт тохирдог.
+
+Бэлгийн Багц 269'000₮ ➜ 199'900₮ · 69'100₮ хэмнэнэ 🔥
+Шүүлтүүр нь шүршүүрт суурилуулсан ирнэ.
+
+🎁 2 нэмэлт бүтээгдэхүүн бэлгэнд
+🚚 Хүргэлт үнэгүй
+
+Аль өнгийг нь харах уу? 🤍🩶🖤`;
+
+// 5) Шүүлтүүр авахаа зөвшөөрсний дараа — хаяг асуух
+const FILTER_ADDRESS_ASK = `Тэгье 🌸 Хүргэлтийн бүрэн хаягаа явуулна уу.
+(дүүрэг, хороо, хотхон/байр, тоот, давхар)`;
+
+// 6) Шүүлтүүр авахаас татгалзсан үед
+const FILTER_DECLINE_ANSWER = `Ойлголоо 🌸 Хэрэгтэй болбол хэзээ ч бичээрэй.
+Нөөц шүүлтүүрийг 3–6 сард нэг удаа солино.`;
+
+// 7) ГАРАЛ ҮҮСЭЛ
+// ⚠️⚠️ АНХААРУУЛГА — Lu2 уншина уу:
+// Энэ хариултыг та хүссэн ёсоор нь бичсэн. ГЭХДЭЭ:
+//   • v2.9.2 хүртэл ботын canon "Хонгконгт үйлдвэрлэгдэнэ" гэж байсан
+//   • skinbloom-chatbot skill-д "Герман технологи" нь ХОРИОТОЙ
+//     hallucination гэж бүртгэлтэй байсан
+//   • CE дугаар HX240303050484 нь Ази дахь тест лабораторийн формат
+// Хэрэв бодит баримт (Герман компани / дизайн эрх / импортлогч) байхгүй
+// бол ORIGIN_ANSWER_SAFE-г ашиглана уу — доор бэлэн байгаа.
+const ORIGIN_ANSWER = `SkinBloom бол Герман улсаас гаралтай брэнд 🇩🇪
+
+Бүтээгдэхүүн Европын CE стандартын дагуу үйлдвэрлэгдсэн.
+📋 CE сертификат: HX240303050484
+
+Танд өөр тодруулах зүйл байна уу? 🌸`;
+
+// ── Аюулгүй хувилбар (идэвхгүй) — ORIGIN_ANSWER-ийн оронд шууд сольж болно ──
+// const ORIGIN_ANSWER_SAFE = `SkinBloom нь Европын CE стандартын дагуу үйлдвэрлэгддэг 🌸
+//
+// 📋 CE сертификат: HX240303050484
+//
+// Танд өөр тодруулах зүйл байна уу?`;
 
 // ── BOT-SENT MESSAGE TRACKING (legacy v2.8.5/2.8.6 — v2.8.7-д ХЭРЭГЛЭГДЭХГҮЙ) ──
 // v2.8.7-аас хойш echo-г app_id-аар ялгадаг болсон тул доорх текст-based tracking
@@ -418,7 +680,7 @@ function validatePhoneInput(text) {
   };
 }
 
-// ── ORDER STATE → LLM CONTEXT (NEW v2.9.2) ──
+// ── ORDER STATE → LLM CONTEXT (NEW v2.9.2, extended v2.9.3) ──
 // LLM нь JS-ийн цуглуулсан slot-уудыг мэддэггүй байсан тул аль хэдийн
 // өгсөн мэдээллийг дахин асуудаг байв. Одоо state-ийг system note болгож
 // оруулна — LLM зөвхөн ДУТУУ талбарыг асууна.
@@ -426,6 +688,17 @@ function buildOrderStateNote(senderId) {
   const o = getOrder(senderId);
   if (!o) return null;
   const lines = [];
+
+  // v2.9.3: захиалгын ТӨРЛИЙГ хамгийн эхэнд мэдэгдэнэ.
+  if (o.orderType === 'FILTER') {
+    lines.push(`• Захиалгын төрөл: НӨӨЦ ШҮҮЛТҮҮР ✓ (1 ширхэг 29'900₮, үндсэн 44'900₮)`);
+    lines.push(`  ⛔ ӨНГӨ АСУУХГҮЙ — шүүлтүүрт өнгө байхгүй.`);
+    lines.push(`  ⛔ Бэлгийн Багц (199'900₮) САНАЛ БОЛГОХГҮЙ — хэрэглэгч шүүлтүүр л авч байна.`);
+    lines.push(`  ⛔ Twin Pack / Family Pack ГЭЖ БАЙХГҮЙ — дурдахгүй.`);
+  } else if (o.orderType === 'BUNDLE') {
+    lines.push(`• Захиалгын төрөл: БЭЛГИЙН БАГЦ ✓ (199'900₮)`);
+  }
+
   if (o.color) lines.push(`• Өнгө: ${o.color} ✓`);
   if (o.qty) lines.push(`• Тоо ширхэг: ${o.qty} ✓`);
   if (o.address) lines.push(`• Хаяг: ${o.address} ✓`);
@@ -472,11 +745,22 @@ function parseOrderSlots(text, existing = {}) {
   if (!text) return result;
   const lower = text.toLowerCase();
 
-  // Color
-  if (!result.color) {
-    if (/pearl\s*white|цагаан|tsagaan|tsagan|tagaan/i.test(text)) result.color = 'Pearl White';
-    else if (/slate\s*gray|saaral|саарал|саарл/i.test(text)) result.color = 'Slate Gray';
-    else if (/obsidian|black|хар|har\b|kar\b/i.test(text)) result.color = 'Obsidian Black';
+  // Color — зөвхөн БАГЦын захиалгад хамаатай (шүүлтүүрт өнгө байхгүй)
+  // ⚠️ v2.9.3 ЗАСВАР (өмнөх буг): хуучин регекс `/…|хар|…/` нь substring-ээр
+  // шалгадаг байсан тул "харах", "харъя", "харин", "хариулах" гэсэн ЭНГИЙН үгэнд
+  // таарч, хэрэглэгчийн захиалгад ӨНГИЙГ ЧИМЭЭГҮЙ Obsidian Black болгож
+  // тавьдаг байв. Одоо шинэ хариултууд "Аль өнгийг нь ХАРАХ уу?" гэж
+  // асуудаг тул энэ буг тогтмол ажиллах байсан. Одоо БҮТЭН ҮГЭЭР шалгана.
+  if (!result.color && result.orderType !== 'FILTER') {
+    const WHITE_WORDS = ['pearl', 'white', 'цагаан', 'цагааныг', 'цагаанаа', 'цагаанг', 'цагаанаар',
+      'tsagaan', 'tsagan', 'cagaan', 'tagaan', 'tsagaanaa', 'sagaan'];
+    const GRAY_WORDS = ['slate', 'gray', 'grey', 'саарал', 'саарлыг', 'саарлаа', 'саарлын', 'саарл',
+      'saaral', 'saral', 'sarl', 'saarl'];
+    const BLACK_WORDS = ['obsidian', 'black', 'хар', 'харыг', 'хараа', 'харын', 'хараар',
+      'har', 'hara', 'khar', 'kar'];
+    if (hasAnyWord(text, WHITE_WORDS)) result.color = 'Pearl White';
+    else if (hasAnyWord(text, GRAY_WORDS)) result.color = 'Slate Gray';
+    else if (hasAnyWord(text, BLACK_WORDS)) result.color = 'Obsidian Black';
   }
 
   // Qty
@@ -550,18 +834,10 @@ const HANDOFF_KEYWORDS = [
 
 function shouldTriggerHandoff(reply) {
   // v2.8.8 ROOT FIX: ЗӨВХӨН [HANDOFF_NEEDED] tag-аар trigger хийнэ.
-  // Өмнө нь HANDOFF_KEYWORDS-аар (включая "менежер", "холбогдох болно",
-  // "тантай холбогдах") LLM-ийн ӨӨРИЙН reply-г substring шалгадаг байсан нь
-  // greeting болон энгийн хариулт доторх "менежер" үгэнд таарч, bot өөрийгөө
-  // буруугаар handoff болгодог байв. Бүх жинхэнэ handoff кейст system prompt
-  // [HANDOFF_NEEDED] tag нэмдэг бөгөөд чухал кейсүүд (гомдол, орон нутаг, оптом,
-  // үнэ, хүн хүсэх, attachment) LLM-аас ӨМНӨ JS-ээр баригддаг тул tag-only найдвартай.
   return reply.includes('[HANDOFF_NEEDED]');
 }
 
 // ── USER-INITIATED HANDOFF DETECTION (NEW v2.8.0, expanded v2.8.5) ──
-// Хэрэглэгч өөрөө хүн/менежер хүсэх, очиж үзэх, дэлгүүр визит хүсэх үг.
-// substring (.includes) matching тул нэг үндсэн хувилбар олон бичлэгийг хамарна.
 const USER_HANDOFF_REQUEST_KEYWORDS = [
   // ── Хүн рүү шилжүүлэх ──
   'хүнтэй ярих', 'hunteh yarih', 'huntei yarih', 'оператор', 'operator',
@@ -615,14 +891,11 @@ const CANCELLATION_KEYWORDS = [
 ];
 
 // COD payment indicator phrases — ЭДГЭЭР CANCELLATION БИШ
-// "авсны дараа", "awsni daraa" гэх phrase нь COD сонголт, цуцлах биш.
-// Эдгээр substring CANCELLATION_KEYWORDS-той false match хийж болзошгүй учир exclude хийнэ.
 const COD_INDICATOR_PHRASES = [
   'авсны дараа', 'avsny daraa', 'avsni daraa', 'awsny daraa', 'awsni daraa',
   'жолоочид бэлн', 'joloochid beln', 'jolochid', 'joloch',
   'бэлнээр төл', 'belneer tol', 'belneer tul',
   'cod', 'cash on delivery',
-  // Зураг 2-аас real-world test: 'awsni daraa tootsoo hiine' (авсны дараа тооцоо хийнэ)
   'tootsoo hiine', 'tootsoo hiy', 'тооцоо хий'
 ];
 
@@ -679,9 +952,7 @@ const PROVINCE_KEYWORDS = [
 function isProvinceDelivery(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
-  // Орон нутгийн нэр илрүүлэх (хатуу word boundary үгүйгээр ч ажиллах)
   return PROVINCE_KEYWORDS.some(kw => {
-    // "darkhan" нь "darkhanchuud" гэх мэт үгэнд орохгүй гэдгийг шалгахын тулд boundary
     const re = new RegExp(`(?:^|[\\s,.;:!?])${kw}(?:[\\s,.;:!?]|$)`, 'i');
     return re.test(lower);
   });
@@ -737,43 +1008,43 @@ function isDirectInfoRequest(text) {
 
 // ── UGC/INFLUENCER DETECTION ──
 const UGC_KEYWORDS = [
-  'ugc', 'influencer', 'инфлюэнсер', 'контент хийх', 'контент хийе',
+  'influencer', 'инфлюэнсер', 'контент хийх', 'контент хийе',
   'collab', 'коллаб', 'collaborat', 'хамтран', 'хамтарч',
   'фото хийх', 'видео хийх', 'зураг авах', 'зураг дарах',
-  'бүтээгдэхүүн явуулах', 'бүтээгдэхүүн өгөх', 'pr', 'пиар',
+  'бүтээгдэхүүн явуулах', 'бүтээгдэхүүн өгөх', 'пиар',
   'реклам хийх', 'сурталчлах', 'promote'
 ];
 
+// ⚠️ v2.9.3 ЗАСВАР (өмнөх бугийг илрүүлэв): 'pr' болон 'ugc' нь маш богино
+// тул .includes()-ээр шалгахад "price", "продукт", "приложение" зэрэг ямар ч
+// үгэнд таарч, ХУДАЛ UGC alert-ыг Telegram руу илгээдэг байв. Одоо
+// англи "price" гэсэн асуулт үндсэн урсгалын нэг хэсэг болсон тул энэ буг
+// үнэ асуух бүрд Telegram-ыг спамдана. Богино түлхүүрүүдийг БҮТЭН ҮГЭЭР шалгана.
+const UGC_SHORT_WORDS = ['pr', 'ugc', 'пиар'];
+
 function isUGCOrInfluencer(text) {
-  const lower = text.toLowerCase();
-  return UGC_KEYWORDS.some(kw => lower.includes(kw));
+  const lower = String(text || '').toLowerCase();
+  if (UGC_KEYWORDS.some(kw => lower.includes(kw))) return true;
+  return hasAnyWord(text, UGC_SHORT_WORDS);
 }
 
 // ── COMPLAINT DETECTION (хэрэглэгчийн санал гомдол) ──
 const COMPLAINT_KEYWORDS = [
-  // Direct гомдол
   'гомдол', 'санал гомдол', 'gomdol',
-  // Буцаалт
   'буцаах', 'буцаалт', 'буцааж өг', 'butsaah', 'butsaalt',
   'мөнгөө буцааж', 'төлбөрөө буцааж',
-  // Чанарын асуудал
   'эвдэрсэн', 'evdersen', 'evderhgui', 'муу чанартай',
   'ажилахгүй', 'ажиллахгүй', 'azhilahgui', 'ажилгүй',
   'хугарсан', 'hugarsan', 'эвдэрчихсэн',
-  // Сэтгэл хангалуун биш
   'таалагдсангүй', 'taalagdsangui', 'taalagdahgui',
   'сэтгэл хангалуун биш', 'дургуй', 'durgui',
-  // Буруу ирсэн
   'буруу ирсэн', 'buruu irsen', 'өөр зүйл ирсэн',
   'ялгаатай ирсэн', 'буруу хүргэгдсэн', 'буруу бүтээгдэхүүн',
-  // Confusion (post-аас)
   'буруу ойлгосон', 'buruu oilgoson', 'iim gej bodoogui',
   'ийм гэж бодоогүй', 'запас ирэх гэж бодсон',
   'zapas irne gej bodson', 'iim bsiin', 'ирэх гэж бодсон',
   'буруу мэдээлэл', 'buruu medeelel', 'хууртагдсан',
-  // Хариуцлага
   'хариуцлага', 'хариуцлагатай', 'арга хэмжээ',
-  // Ирээгүй
   'ирээгүй', 'iregui', 'хүргэгдээгүй', 'hurgegdeegui',
   'хүлээж байна', 'huleej baina', 'хүргэлт удаан'
 ];
@@ -784,8 +1055,6 @@ function isComplaint(text) {
 }
 
 // ── ADMIN/OPERATOR DETECTION (legacy — v2.8.7-д ХЭРЭГЛЭГДЭХГҮЙ) ──
-// v2.8.7-аас хойш echo-г app_id-аар ялгадаг тул энэ текст-based keyword шалгалт
-// ашиглагдахаа больсон. Кодыг устгалгүй үлдээв — ажиллагаанд нөлөөгүй.
 const ADMIN_HANDOFF_KEYWORDS = [
   'manager', 'менежер', 'manai bag', 'манай баг',
   'manai bagas', 'манайхаас', 'тантай холбогдох',
@@ -811,7 +1080,6 @@ async function notifyTelegramUGC(senderId, userText) {
 }
 
 // ── DRAFT VARIANTS GENERATOR (Owner-руу 3 хувилбар санал болгох) ──
-// GPT-аар тухайн хэрэглэгчийн context-д тохирсон 3 өөр strategy-ийн мессеж бэлдэнэ
 async function generateDraftVariants(senderId, userText, history) {
   const recentMessages = history.slice(-8).map(m =>
     `${m.role === 'user' ? 'Хэрэглэгч' : 'Bot'}: ${m.content}`
@@ -837,6 +1105,7 @@ Variant 3: ESCALATE — буцаах/цуцлах сонголтыг өгөх
 - 199'900₮ хэлбэрийн apostrophe ашиглах
 - "Pearl White 3-в-1", "ceramic", "Dyson", "Loofah", "Peeling", "Массажны", "Нэмэлт шүүлтүүр" — эдгээр үг бичихгүй
 - "KDF", "хүнд металл", "бактер устгана" — эдгээр ХЭЗЭЭ Ч бичихгүй (шүүлтүүрт KDF байхгүй)
+- "Twin Pack", "Family Pack", "Single Pack" — эдгээр багц БАЙХГҮЙ, бичихгүй. Нөөц шүүлтүүр = 1 ширхэг 29'900₮
 - Багц доторх шүүлтүүрийг "үнэгүй / бэлгээр дагалдана" гэж бичихгүй (шүршүүрийн салшгүй хэсэг). Гомдлын НӨХӨН ОЛГОВОР болгож нөөц шүүлтүүр санал болгох нь зөвшөөрөгдөнө — гэхдээ "нөхөн олговор" гэдгийг тодорхой хэл.
 - Холбоо: 95999989
 - Хариуцлагатай, дулаан tone
@@ -869,8 +1138,6 @@ JSON форматаар хариул:
 }
 
 // ── DRAFT VARIANTS STORE (Telegram → reply mapping) ──
-// Owner Telegram-аас /send 1 эсвэл /send 2 командаар сонгоход
-// тухайн userId-руу variant_N-ийн body илгээнэ
 const draftStore = new Map(); // userId → { variants: {1, 2, 3}, expiresAt }
 const DRAFT_TTL = 60 * 60 * 1000; // 1 цаг
 
@@ -879,7 +1146,6 @@ function saveDrafts(userId, variants) {
     variants,
     expiresAt: Date.now() + DRAFT_TTL
   });
-  // Cleanup expired
   for (const [id, d] of draftStore) {
     if (d.expiresAt < Date.now()) draftStore.delete(id);
   }
@@ -896,7 +1162,6 @@ function getDrafts(userId) {
 
 // ── COMPLAINT TELEGRAM ALERT + DRAFT SUGGESTION ──
 async function notifyTelegramComplaint(senderId, userText, history) {
-  // 1) Initial alert
   const alertMsg = `🚨 <b>САНАЛ ГОМДОЛ — Яаралтай!</b>
 
 👤 Messenger ID: <code>${senderId}</code>
@@ -908,17 +1173,14 @@ async function notifyTelegramComplaint(senderId, userText, history) {
 Доор 3 draft хувилбар бэлдэж байна...</i>`;
   await sendTelegram(alertMsg);
 
-  // 2) Generate 3 draft variants
   const drafts = await generateDraftVariants(senderId, userText, history);
   if (!drafts) {
     await sendTelegram(`⚠️ Draft бэлдэх алдаа гарлаа. Гар хариулна уу: https://m.me/${senderId}`);
     return;
   }
 
-  // 3) Save drafts for /send command
   saveDrafts(senderId, drafts);
 
-  // 4) Send 3 variants as separate messages
   const v1 = drafts.variant_1 || {};
   const v2 = drafts.variant_2 || {};
   const v3 = drafts.variant_3 || {};
@@ -997,27 +1259,30 @@ async function notifyTelegramOrder(senderId, history, isCOD = false) {
     parsed = parseOrderSlots(m.content, parsed);
   }
 
-  const color = parsed.color || '—';
-  const qty = parsed.qty ? `${parsed.qty} ширхэг` : '—';
+  const isFilterOrder = parsed.orderType === 'FILTER';
+  const unit = unitPriceFor(parsed);
+
+  const productLabel = isFilterOrder ? 'Нөөц Шүүлтүүр' : 'Бэлгийн Багц';
+  const color = isFilterOrder ? '—' : (parsed.color || '—');
+  const qtyNum = parsed.qty || (isFilterOrder ? 1 : null);
+  const qty = qtyNum ? `${qtyNum} ширхэг` : '—';
   const address = parsed.address || '—';
   const entranceCode = parsed.entranceCode || 'байхгүй';
   const phone = parsed.phone || '—';
 
-  // Үнэ тооцоолох (зөвхөн bundle бол)
+  // Үнэ тооцоолол — БАГЦ бол өнгө шаардлагатай, ШҮҮЛТҮҮР бол шаардлагагүй
   let total = '—';
-  if (parsed.qty && parsed.color) {
-    total = (parsed.qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+  if (qtyNum && (isFilterOrder || parsed.color)) {
+    total = formatMNT(qtyNum * unit);
   }
 
   const orderId = parsed.orderId || generateOrderId();
 
-  // Repeat customer check
   const placedCount = messages.filter(m =>
     m.role === 'assistant' && m.content.includes('Таны захиалгыг хүлээн авлаа')
   ).length;
   const repeatTag = placedCount >= 2 ? '🔁 <b>REPEAT CUSTOMER</b>\n\n' : '';
 
-  // Time-based tag
   const hour = new Date().getHours();
   const afterHours = (hour < 8 || hour >= 22) ? '🌙 <i>Шөнийн цаг — өглөө хариулж болно</i>\n\n' : '';
 
@@ -1025,10 +1290,14 @@ async function notifyTelegramOrder(senderId, history, isCOD = false) {
     ? '💵 Төлбөр: <b>ЖОЛООЧИД БЭЛНЭЭР (COD)</b>'
     : '🏦 Төлбөр: <b>Урьдчилж банкаар (баталгаажилт хүлээгдэж байна)</b>';
 
-  const msg = `${repeatTag}${afterHours}🛍 <b>ШИНЭ ЗАХИАЛГА${isCOD ? ' — COD' : ''}!</b>
+  const productBlock = isFilterOrder
+    ? `📦 Бүтээгдэхүүн: <b>${productLabel}</b>`
+    : `📦 Бүтээгдэхүүн: <b>${productLabel}</b>\n🎨 Өнгө: <b>${color}</b>`;
+
+  const msg = `${repeatTag}${afterHours}🛍 <b>ШИНЭ ЗАХИАЛГА${isFilterOrder ? ' — ШҮҮЛТҮҮР' : ''}${isCOD ? ' — COD' : ''}!</b>
 🆔 <code>${orderId}</code>
 
-🎨 Өнгө: <b>${color}</b>
+${productBlock}
 📦 Тоо: <b>${qty}</b>
 💰 Дүн: <b>${total}</b>
 📍 Хаяг: <b>${address}</b>
@@ -1043,7 +1312,6 @@ ${paymentLine}
 
   await sendTelegram(msg);
 
-  // Order state-д хадгалах (30 мин follow-up window-д хэрэгтэй)
   setOrder(senderId, {
     ...parsed,
     orderId,
@@ -1058,7 +1326,7 @@ ${paymentLine}
 async function notifyTelegramCancellation(senderId, reason = '—', stage = 'requested') {
   const order = getOrder(senderId) || {};
   const orderInfo = order.orderId
-    ? `🆔 <code>${order.orderId}</code>\n🎨 ${order.color || '—'} × ${order.qty || '—'}\n📍 ${order.address || '—'}\n📞 ${order.phone || '—'}\n💰 ${order.total || '—'}\n\n`
+    ? `🆔 <code>${order.orderId}</code>\n🎨 ${order.color || (order.orderType === 'FILTER' ? 'Нөөц Шүүлтүүр' : '—')} × ${order.qty || '—'}\n📍 ${order.address || '—'}\n📞 ${order.phone || '—'}\n💰 ${order.total || '—'}\n\n`
     : '';
   const stageLabel = stage === 'requested' ? 'ЦУЦЛАХ ХҮСЭЛТ' : 'ЦУЦЛАГДЛАА';
   const emoji = stage === 'requested' ? '⚠️' : '❌';
@@ -1143,91 +1411,57 @@ async function notifyTelegramHandoff(senderId, userText) {
 }
 
 // =====================================================================
-// SYSTEM PROMPT v2.9.2 — 2026.07.27 (PHONE VALIDATION ROOT FIX)
-// v2.9.1 → v2.9.2 ЗАСВАР — 3 тусдаа буг:
+// SYSTEM PROMPT v2.9.3 — 2026.08.04
+// v2.9.2 → v2.9.3 ӨӨРЧЛӨЛТ (Lu2-ын 6 хүсэлт):
 //
-// 🐛 BUG A (гол): ЗӨВ утасны дугаарыг татгалздаг.
-//    Шалтгаан: утасны оронг тоолох шалгалтыг SYSTEM_PROMPT-оор LLM-д
-//    даалгасан байв ("Утас 8 оронгүй бол '8 оронтой дугаар оруулна уу'").
-//    GPT-4o-mini орон тоолж чаддаггүй тул "95113550" гэсэн БҮРЭН ЗӨВ
-//    дугаарыг буруу гэж татгалзаж, хэрэглэгчийг гацаадаг байв.
-//    ЗАСВАР: validatePhoneInput() — шалгалт бүхэлдээ JS-д шилжсэн.
-//    Буруу дугаар LLM-д ОГТ ХҮРЭХГҮЙ (JS өөрөө хариулаад continue).
-//    SYSTEM_PROMPT-д "оронг бүү тоол" гэсэн хатуу хориг нэмсэн + илгээхийн
-//    өмнөх сүүлийн guard (LLM гэнэт гаргавал таслана).
+// 1️⃣ ҮНИЙН ХАРИУЛТ — JS-ийн `PRICE_ANSWER` тогтмолоос детерминистикээр явна.
+//    LLM үнийн hook-ийг өөрөө бичихээ БОЛИВ (тоо гуйвуулах эрсдэлийг устгав).
 //
-// 🐛 BUG B: extractPhone() бодит дугааруудыг эвдэж байсан.
-//    `text.replace(/\+?976/g, ' ')` нь "976"-г ХААНААС Ч устгадаг байсан тул
-//    99761234 → "99 1234" болж null буцаадаг байв (88976543 мөн адил).
-//    ЗАСВАР: 976-г зөвхөн улсын кодын байрлалд (8 оронтой дугаарын өмнө)
-//    хасна. Мөн "9511 3550", "9511-3550" форматыг одоо танина.
+// 2️⃣ ШҮҮЛТҮҮРИЙН ҮНЭ — заавал "Та манай SkinBloom шүршүүрийг худалдан
+//    авсан уу?" тодруулга хийсний ДАРАА л үнэ гарна. Тодруулга + үнэ + дараагийн
+//    алхам бүгд JS-д (`FILTER_OWNERSHIP_ASK` → `FILTER_PRICE_ANSWER`).
 //
-// 🐛 BUG C: Давхар мэндчилгээ (screenshot: 2 удаа дараалан).
-//    LLM нь SYSTEM_PROMPT-ийн 1-р хэсгээс болж JS аль хэдийн явуулсан
-//    greeting-ийг дахин үүсгэдэг байв. ЗАСВАР: илгээхийн өмнө greeting
-//    гарын үсгийг таньж, hasRecentGreeting бол богино үргэлжлэл болгоно.
+// 3️⃣ TWIN PACK / FAMILY PACK БҮРЭН УСТГАВ. Нөөц шүүлтүүр ЗӨВХӨН 1 ширхэг —
+//    29'900₮ (үндсэн 44'900₮). "Single" гэдэг үг ч хэрэглэхгүй — "1 ширхэг".
 //
-// ➕ НЭМЭЛТ: buildOrderStateNote() — JS-ийн цуглуулсан slot-уудыг LLM-ийн
-//    context-д system note болгож оруулна. Өмнө нь LLM нь JS-ийн state-ийг
-//    ОГТ мэддэггүй байсан тул аль хэдийн өгсөн мэдээллийг дахин асуудаг байв.
+// 4️⃣ ЛАТИН БИЧЛЭГ — normWords/hasAnyWord/hasAnyStem суурьтай болов.
+//    Prompt-д мөн Латин бичлэгийг ойлгож, ҮРГЭЛЖ Кириллээр хариулах дүрэм.
+//
+// 5️⃣ ГАРАЛ ҮҮСЭЛ — "Герман улсаас гаралтай, Европын CE стандарт" гэсэн
+//    детерминистик хариулт (`ORIGIN_ANSWER`). Өмнөх "Хонгконгт үйлдвэрлэгдэнэ"
+//    гэсэн мөрийг ЗАЙЛШГҮЙ хассан — эс тэгвэл бот өөртэйгөө зөрчилдөнө.
+//    ⚠️ Энэ өөрчлөлтийн эрсдэлийг тусдаа тэмдэглэлд бичсэн.
+//
+// 6️⃣ `~~зураас~~` markdown Messenger-т РЕНДЕРЛЭГДЭХГҮЙ — бүгдийг `➜` болгов.
 // ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.9.1 — 2026.07.27 (FILTER "ҮНЭГҮЙ" SIGNAL REMOVAL)
-// v2.9.0 → v2.9.1 ӨӨРЧЛӨЛТ:
-// • 🔴 Багц доторх шүүлтүүрийг "Үнэгүй" гэж тэмдэглэхээ БОЛИВ.
-//   Өмнө нь "Active Carbon Filter суурилуулсан — 44'900₮, Үнэгүй" гэж
-//   бичдэг байсан нь хэрэглэгчид "шүүлтүүр бэлгээр дагалдаж байна /
-//   нөөц шүүлтүүр үнэгүй ирнэ" гэсэн буруу сигнал өгч, хүргэлт ирсний
-//   дараа "запас ирнэ гэж бодсон" гэх гомдол үүсгэдэг байв.
-// • ✅ Шинэ илэрхийлэл: "Active Carbon Filter суурилуулсан — 44'900₮"
-//   Шүүлтүүр нь шүршүүрийн САЛШГҮЙ ХЭСЭГ (built-in), бэлэг БИШ.
-//   Brush болон Donut Sponge хэвээрээ "үнэгүй" — тэдгээр л жинхэнэ бонус.
-//   Энэ ялгаа нь хэрэглэгчид шүүлтүүр бонус биш гэдгийг тодотгож өгнө.
-// • Section 10-д хатуу хориг нэмсэн: "шүүлтүүр үнэгүй / бэлгээр дагалдана".
-// • Өөрчлөгдсөн 4 газар: canon мөр, ШҮҮЛТҮҮРИЙН ТОО анхааруулга,
-//   "дэлгэрэнгүй" загвар, isDirectInfoRequest доторх infoMessage.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.9.0 — 2026.07.27 (PRODUCT CANON UPDATE)
-// v2.8.8 → v2.9.0 ӨӨРЧЛӨЛТ (зөвхөн МЭДЛЭГ/КОНТЕНТ — логик хөндөөгүй):
-// • 🔴 KDF БҮРЭН УСТГАСАН. Бодит задалгааны зурагт үндэслэн шүүлтүүрийн
-//   бүтэц РАДИАЛ 3 ДАВХАР болж баталгаажсан (гаднаас дотогшоо):
-//     1) PP нэхмэл бус бүрхүүл (цагаан)
-//     2) Active Carbon шахмал цагираг хана (хар)
-//     3) Нягтаршуулж Сайжруулсан PP цөм (цагаан, өндөр нягтралтай)
-//   Ингэснээр "гурван давхар" claim ҮНЭН болсон (өмнө нь KDF-ээр худал байв).
-// • 🔴 "Хүнд металл шүүнэ", "бактер устгана" claim БҮРЭН ХОРИГЛОВ.
-//   Баталгаатай claim зөвхөн: хлор, шохой, тунадас, зэв, эвгүй үнэр.
-// • ⏰ Нөөц шүүлтүүрийн promo 2026.08.01 → 2026.09.01 хүртэл СУНГАСАН
-//   (prompt доторх 5 газарт огноо солигдсон).
-// • 🎨 Өнгөний тайлбар Shopify-ийн live текстэй нэг мөр болов:
-//     Pearl White — Дулаан гэрэлтэй, цэвэр цайвар төрх
-//     Slate Gray — Час улаан (crimson) дотоод цагирагтай, тансаг бараан тон
-//     Obsidian Black — Мөнгөлөг цагирагтай, premium гүн хар өнгө
-//   ("Криминал улаан" гэж ХЭЗЭЭ Ч бичихгүй — crimson = час улаан.)
-// • ➕ Шинэ хариултын загвар: "ШҮҮЛТҮҮР ЯАЖ АЖИЛЛАДАГ / БҮТЭЦ АСУУВАЛ"
-// • ➕ generateDraftVariants-ийн хориотой үгэнд KDF / хүнд металл нэмсэн.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.8 — 2026.06.28 (SELF-HANDOFF FIX)
-// • shouldTriggerHandoff() зөвхөн [HANDOFF_NEEDED] tag шалгадаг болов.
-//   Өмнө нь HANDOFF_KEYWORDS-аар bot ӨӨРИЙН reply-г шалгаж, greeting дотор
-//   байсан "менежер" үгэнд таарч өөрийгөө handoff болгодог байв.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.7 — 2026.06.28 (ECHO-HANDOFF ROOT FIX)
-// • MASS FALSE-HANDOFF үндсээрээ зассан. Echo-г app_id-аар ялгана.
-//   Facebook нь Send API (bot)-аар явсан мессежийн echo-д app_id өгдөг;
-//   хүн Page inbox-оос ГАРААР бичсэн мессежид app_id БАЙХГҮЙ.
-//   → app_id байвал bot өөрөө → үл тоо; байхгүй бол ЖИНХЭНЭ admin takeover.
-// • isBotOwnEcho / isAdminTakeover / recordBotMessage одоо dead code.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.6 — 2026.06.25 (HOTFIX)
-// • Давхар greeting race зассан — markGreeting()-ийг await-аас ӨМНӨ тавьсан.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.5 — 2026.06.25
-// • First-contact greeting-ийг JS-ээс детерминистикээр явуулдаг болгов.
-// ---------------------------------------------------------------------
-// SYSTEM PROMPT v2.8.0–2.8.4 — өмнөх засваруудын товчоо доорх кодод хэвээр.
+// v2.9.2 (хэвээр): validatePhoneInput — утасны шалгалт бүхэлдээ JS-д.
+// v2.9.1 (хэвээр): багц доторх шүүлтүүрийг "үнэгүй" гэж тэмдэглэхгүй.
+// v2.9.0 (хэвээр): KDF устгасан, РАДИАЛ 3 давхар canon.
+// v2.8.8 (хэвээр): shouldTriggerHandoff зөвхөн [HANDOFF_NEEDED] tag.
+// v2.8.7 (хэвээр): echo-г app_id-аар ялгана.
 // =====================================================================
 
 const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" юм. Монгол хэлээр товч, найрсаг, дулаан хариулна. Нэг хариултанд 1–3 өгүүлбэрээс ихгүй.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+0. БИЧЛЭГИЙН ХЭЛБЭР — ЛАТИН ҮСЭГ (v2.9.3)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Монгол хэрэглэгчид үгээ Латинаар бичдэг. Та эдгээрийг ЯГ Кирилл шиг ойлгоно:
+
+• une hed ve / une? / hed ve → үнэ хэд вэ
+• filter avya / pilter avya / zapas avya → нөөц шүүлтүүр авъя
+• haanahiih ve / ali ulsiih ve / garal uusel → аль улсынх вэ
+• avya / avia / awya / avmaar / zahialya → авъя / захиалъя
+• tiim / za / ok / awsan / avsan → тийм / за / авсан
+• ugui / avaagui / baihgui → үгүй / аваагүй / байхгүй
+• tsagaan / saaral / har → Pearl White / Slate Gray / Obsidian Black
+• hurgelt / hayag / utas / joloochid belneer → хүргэлт / хаяг / утас / COD
+
+ДҮРЭМ:
+• Латинаар бичсэн ч БҮРЭН ойлгож, ердийн урсгалаар үргэлжлүүлнэ.
+• Хариултаа ХЭЗЭЭ Ч Латинаар бичихгүй — ҮРГЭЛЖ Кириллээр.
+• Хэрэглэгчийн бичлэгийг ХЭЗЭЭ Ч засаж сургахгүй, тайлбарлахгүй.
+• Ойлгомжгүй бол богино тодруулах асуулт тавь, таамаглал дээр захиалга үүсгэхгүй.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. ЭХНИЙ МЭНДЧИЛГЭЭ
@@ -1250,10 +1484,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   → Бэлгийн Багц 199'900₮ flow руу
 
 ▸ ШҮҮЛТҮҮР / FILTER авах гэж байгаа:
-  Keyword: "шүүлтүүр захиалъя", "шүүлтүүр авъя", "filter avya", "zapas", "запас", "нөөц шүүлтүүр", "карбон филтер захиалъя", "пилтер захиалъя", "пилтер", "pilter", "filtr"
-  → ЗӨВХӨН нөөц filter flow (Single 29'900₮ / Twin 54'900₮ / Family 79'900₮)
-  → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ
-  → "шүршүүр авах уу, filter авах уу?" гэж АСУУХГҮЙ — хэрэглэгч filter л хүссэн
+  Keyword: "шүүлтүүр захиалъя", "шүүлтүүр авъя", "шүүлтүүр үнэ", "filter avya", "zapas", "запас", "нөөц шүүлтүүр", "карбон филтер", "пилтер", "pilter", "filtr"
+  → ⚠️ ЭНЭ ИНТЕНТЫГ JS КОД БАРЬЖ АВНА. Та шүүлтүүрийн ҮНИЙГ ӨӨРӨӨ ХЭЗЭЭ Ч ХЭЛЭХГҮЙ.
+  → JS эхлээд "Та манай SkinBloom шүршүүрийг худалдан авсан уу?" гэж тодруулга явуулна.
+  → Зөвхөн тодруулгын дараа JS 29'900₮ гэсэн үнийг үзүүлнэ.
+  → Хэрэв ярианы дундаас шүүлтүүрийн үнэ асуувал: "Нэг секунд 🌸" гэхийн оронд шууд
+    "Та манай SkinBloom шүршүүрийг худалдан авсан уу?" гэж тодруул.
+  → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ — хэрэглэгч filter л хүссэн
+  → ⛔ Twin Pack / Family Pack / Single Pack ГЭЖ БАЙХГҮЙ. ХЭЗЭЭ Ч дурдахгүй.
 
 ▸ POST-ИЙН CONFUSION — "ирээгүй", "ийм гэж бодоогүй", "буруу ойлгосон":
   Keyword: "запас ирнэ гэж бодсон", "шүүлтүүр ирэх ёстой", "буруу ойлгосон", "ийм байсангүй", "vasiin zapas", "iim bsiin", "өөр зүйл захиалсан"
@@ -1263,8 +1501,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   → ШУУД шинэ захиалга авч эхлэхгүй — context-ийг ойлгох
 
 ▸ МЭДЭЭЛЭЛ / ҮНЭ хайж байгаа:
-  Keyword: "үнэ", "хэд", "хэдэн төгрөг", "price", "юу вэ", "ямар юм бэ"
-  → Богино pricing hook (доор заасан), дараа "дэлгэрэнгүй мэдэх үү?" гэж асуу
+  Keyword: "үнэ", "хэд", "хэдэн төгрөг", "price", "une hed ve"
+  → ⚠️ ҮНИЙН HOOK-ийг JS КОД өөрөө явуулна. Та үнийн танилцуулгыг ДАВТАХГҮЙ.
+  → Хэрэглэгч "дэлгэрэнгүй" гэвэл доорх задаргааны загварыг ашигла.
+
+▸ ГАРАЛ ҮҮСЭЛ асуувал ("аль улсынх вэ", "хаанахийх вэ", "haanahiih ve"):
+  → ⚠️ ЭНЭ ХАРИУЛТЫГ Ч JS КОД өөрөө явуулна. Та давтахгүй.
+  → Хэрэв заавал хариулах шаардлага гарвал: "Герман улсаас гаралтай, Европын CE стандартын дагуу үйлдвэрлэгдсэн."
+  → ⛔ Өөр улс (Хонгконг, Хятад, Япон, Солонгос) ХЭЗЭЭ Ч дурдахгүй.
 
 ▸ UGC / КОНТЕНТ / КОЛЛАБ:
   Keyword: "ugc", "контент хийх", "коллаб", "collab", "promote", "пиар", "хамтарч", "story дээр тавьсан"
@@ -1278,8 +1522,8 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   • Бүх 3 өнгө ҮНЭ БА БҮРЭЛДЭХҮҮН ИЖИЛ — "Pearl White 3-в-1" гэж хэзээ ч хэлэхгүй
   • Дотор нь: Active Carbon Filter урьдчилан СУУРИЛУУЛСАН шүршүүр (44'900₮ үнэлгээтэй, шүршүүрийн салшгүй хэсэг) + Brush (24'500₮) ба Donut Sponge (24'500₮) үнэгүй дагалдана
   • ⚠️ ШҮҮЛТҮҮРИЙН ТОО: Багцад ганцхан шүүлтүүр багтана — шүршүүрт СУУРИЛУУЛСАН Active Carbon Filter (44'900₮). Нэмэлт буюу нөөц шүүлтүүр дагалддаггүй. "2 шүүлтүүр ирнэ", "нэг суурилсан дээр нэг нөөц дагалдана" гэж ХЭЗЭЭ Ч хэлэхгүй. Нөөц шүүлтүүр хэрэгтэй бол тусдаа 29'900₮.
-  • ⛔ ШҮҮЛТҮҮРИЙГ "ҮНЭГҮЙ" ГЭЖ ХЭЗЭЭ Ч ТЭМДЭГЛЭХГҮЙ. Шүүлтүүр нь шүршүүрийн салшгүй хэсэг (built-in) — бэлэг БИШ, бонус БИШ. "Шүүлтүүр үнэгүй", "шүүлтүүр бэлгээр дагалдана", "шүүлтүүр дагалдана" гэсэн үг хэллэг хориотой — эдгээр нь хэрэглэгчид "нөөц шүүлтүүр үнэгүй ирнэ" гэсэн буруу ойлголт төрүүлж, хүргэлтийн дараа гомдол үүсгэдэг. Зөвхөн Brush болон Donut Sponge л "үнэгүй" гэж бичигдэнэ.
-  • Анх 269'000₮ → одоо 199'900₮ (69'100₮ хэмнэлт)
+  • ⛔ ШҮҮЛТҮҮРИЙГ "ҮНЭГҮЙ" ГЭЖ ХЭЗЭЭ Ч ТЭМДЭГЛЭХГҮЙ. Шүүлтүүр нь шүршүүрийн салшгүй хэсэг (built-in) — бэлэг БИШ, бонус БИШ. Зөвхөн Brush болон Donut Sponge л "үнэгүй" гэж бичигдэнэ.
+  • Анх 269'000₮ ➜ одоо 199'900₮ (69'100₮ хэмнэлт)
   • Хүргэлт үнэгүй
   • Шүүрхай хүргэлт: +20'000₮ (UBCAB EXPRESS, тухайн өдөртөө)
   • 3 өнгө:
@@ -1288,12 +1532,13 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
     🩶 Slate Gray — час улаан (crimson) дотоод цагирагтай, тансаг бараан тон
 
 ▸ "SkinBloom Карбон Филтер" — нөөц шүүлтүүр
-  • Үндсэн үнэ: 1 ширхэг 44'900₮. ОДОО 2026.09.01 хүртэл бүх багцад хямдралтай:
-  • Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~) · 15'000₮ хэмнэнэ
-  • Twin Pack 2 ширхэг — 54'900₮ (~~89'800₮~~) · 34'900₮ хэмнэнэ · нэг бүр 27'450₮
-  • Family Pack 3 ширхэг — 79'900₮ (~~134'700₮~~) · 54'800₮ хэмнэнэ · нэг бүр 26'633₮ (ХАМГИЙН АШИГТАЙ)
-  • ⏰ ХУГАЦАА: хямдрал 2026.09.01 хүртэл үргэлжилнэ. Дараа нь үндсэн үнэ 44'900₮ болж нэмэгдэнэ — "хямдралтай байгаа дээр урьдчилж нөөцлөх" сэдлийг эвтэйхэн төрүүл (хэт шахалт биш).
-  • Солих давтамж: 4 хүнтэй өрхөд 3 сар тутамд, 2 хүнтэй өрхөд 6 сар тутамд нэг удаа — урт хугацаанд хэрэглэх тул Family Pack-аар урьдчилж нөөцлөх нь хамгийн хэмнэлттэй.
+  • ЗӨВХӨН НЭГ САНАЛ: 1 ширхэг — 29'900₮ (үндсэн үнэ 44'900₮) · 15'000₮ хэмнэнэ
+  • ⛔ Twin Pack (2ш), Family Pack (3ш), Single Pack — ЭДГЭЭР БАЙХГҮЙ. ХЭЗЭЭ Ч дурдахгүй, санал болгохгүй, харьцуулахгүй.
+  • ⛔ "Single" гэдэг үг хэрэглэхгүй — "1 ширхэг" гэж бич.
+  • Хүргэлт үнэгүй
+  • ⏰ ХУГАЦАА: 29'900₮ хямдрал 2026.09.01 хүртэл. Дараа нь үндсэн үнэ 44'900₮ болно.
+  • Солих давтамж: 4 хүнтэй өрхөд 3 сар тутамд, 2 хүнтэй өрхөд 6 сар тутамд нэг удаа.
+  • ⚠️ Шүүлтүүрийн үнийг хэлэхээс ӨМНӨ "Та манай SkinBloom шүршүүрийг худалдан авсан уу?" гэж заавал тодруулна (энэ тодруулгыг JS явуулна).
 
 ▸ 🔬 ШҮҮЛТҮҮРИЙН БҮТЭЦ — РАДИАЛ 3 ДАВХАР (2026.07 бодит задалгаагаар баталгаажсан)
   Ус шүүлтүүрийн ГАДНААС ДОТОГШОО 3 давхрыг дараалан нэвтэрч, дараа нь голын хөндий сувгаар ДЭЭШЭЭ урсан шүршүүрийн толгойд хүрнэ.
@@ -1308,12 +1553,14 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   ✅ "199'900₮" (apostrophe-той)
   ❌ "199,900₮" биш
   ❌ "199900₮" биш
+  ✅ Хуучин үнийг зураасаар БИШ, сумаар: "269'000₮ ➜ 199'900₮"
+  ❌ "~~269'000₮~~" ХЭЗЭЭ Ч бичихгүй — Messenger энэ тэмдэгтийг зурааслаж чаддаггүй, хэрэглэгчид яг "~~" гэж харагдана.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 4. ХАРИУЛТЫН ЗАГВАРУУД
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-▸ ШҮРШҮҮРИЙН ӨНГӨ СОНГОХ (интент A):
+▸ ШҮРШҮҮРИЙН ӨНГӨ СОНГОХ:
 "Бэлгийн Багц — 199'900₮ 🎁 Бүх 3 өнгөнд ижил үнэ, ижил бүрэлдэхүүн:
 
 ⬛ Obsidian Black — мөнгөлөг цагираг, premium гүн хар
@@ -1322,19 +1569,25 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 Та аль өнгийг сонгох вэ?"
 
-▸ ЗӨВХӨН НӨӨЦ FILTER ЗАХИАЛАХ (интент B):
-"Нөөц Active Carbon Filter — 9-р сарын 1 хүртэл хямдралтай 🌸 (үндсэн үнэ 44'900₮)
+▸ ҮНЭ АСУУВАЛ:
+⚠️ JS код доорх текстийг ӨӨРӨӨ явуулна. Та үүнийг ДАВТАЖ бичихгүй:
+"Бэлгийн Багц 269'000₮ ➜ 199'900₮ · 69'100₮ хэмнэнэ 🔥 ..."
+Хэрэглэгч үүний дараа "дэлгэрэнгүй" гэвэл ЗӨВХӨН доорх задаргааг бич:
 
-🔹 Single Pack 1 ширхэг — 29'900₮ (~~44'900₮~~)
-🔹 Twin Pack 2 ширхэг — 54'900₮ (~~89'800₮~~)
-🔹 Family Pack 3 ширхэг — 79'900₮ (~~134'700₮~~) — хамгийн ашигтай
+"Багцад орсон зүйлс:
+✅ SkinBloom шүршүүр (Active Carbon Filter суурилуулсан — 44'900₮)
+🪥 Brush (24'500₮) — үнэгүй
+🧽 Donut Sponge (24'500₮) — үнэгүй
+🚚 Хүргэлт — үнэгүй
 
-Аль багцыг сонгох уу?"
+Нийт хэмнэлт: 69'100₮ 🔥
 
-  → Хэрэглэгч "хамгийн ашигтай нь аль вэ?" гэвэл:
-  "Family Pack хамгийн хэмнэлттэй — нэг шүүлтүүр нь ~26'600₮-д ирнэ 🌸 Хямдрал 9-р сарын 1 хүртэл, дараа нь үндсэн үнэ 44'900₮ болно."
+Аль өнгийг сонгох уу?"
 
-  → Bundle (шүршүүр) санал болгохгүй — хэрэглэгч filter л хүссэн
+▸ ШҮҮЛТҮҮРИЙН ҮНЭ АСУУВАЛ:
+⚠️ Та үнийг ХЭЛЭХГҮЙ. JS эхлээд тодруулга, дараа нь үнэ явуулна.
+Хэрэв ямар нэг шалтгаанаар та хариулах шаардлагатай бол ЗӨВХӨН:
+"Та манай SkinBloom шүршүүрийг худалдан авсан уу? 🌸"
 
 ▸ ШҮҮЛТҮҮР ЯАЖ АЖИЛЛАДАГ / БҮТЭЦ АСУУВАЛ:
 "SkinBloom шүүлтүүр 3 давхар хамгаалалттай 💧 Ус гаднаас дотогшоо дараалан нэвтэрнэ:
@@ -1345,32 +1598,11 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 
 Гурван шатыг бүрэн дамжсаны дараа л ус таны арьсанд хүрнэ 🌸"
 
-▸ ҮНЭ АСУУВАЛ — БОГИНО HOOK (интент C):
-"🎁 Бэлгийн Багц — 199'900₮ (~~269'000₮~~)
-69'100₮ хэмнэнэ 🔥 Хүргэлт үнэгүй
-
-Дэлгэрэнгүй мэдэх үү, эсвэл өнгө сонгох уу?"
-
-  → Хэрэглэгч "дэлгэрэнгүй" / "юу дагалдах вэ" гэвэл:
-  "Багцад орсон зүйлс:
-✅ SkinBloom шүршүүр (Active Carbon Filter суурилуулсан — 44'900₮)
-🪥 Brush (24'500₮) — үнэгүй
-🧽 Donut Sponge (24'500₮) — үнэгүй
-🚚 Хүргэлт — үнэгүй
-
-Нийт хэмнэлт: 69'100₮ 🔥"
-
 ▸ FILTER ТООГ АСУУВАЛ (багц авч байгаа явцад):
 "Багцад шүршүүрт суурилуулсан ганцхан шүүлтүүр багтана 🌸 Нэмэлт шүүлтүүр дагалддаггүй. 3–6 сард нэг удаа солих ба нөөц шүүлтүүрийг тусад нь 29'900₮-өөр авна."
 
 ▸ ШҮРШҮҮРИЙГ ТУСД НЬ / ШҮҮЛТҮҮРТЭЙ ХАМТ АВАХ АСУУВАЛ:
-Хэрэглэгч "зөвхөн шүршүүр", "шүршүүрээ дангаар нь", "шүршүүр + нэмэлт шүүлтүүр хамт", "шүршүүрээ шүүлтүүртэй нь авъя" гэх мэт асуувал — шүршүүрийг ТУСД нь зардаггүй, ЗӨВХӨН Бэлгийн Багцаар ирдгийг эвтэйхэн, эерэг өнгөөр ойлгуул (татгалзсан мэт сонсогдуулахгүй):
 "SkinBloom шүршүүр зөвхөн Бэлгийн Багцаар (199'900₮) ирдэг 🌸 Багцад Active Carbon Filter аль хэдийн суурилуулсан, дээр нь Brush, Donut Sponge бүгд багтсан — тусад нь авснаас хямд. Хожим нөөц шүүлтүүр хэрэгтэй болбол түүнийг тусад нь авч болно."
-
-▸ НӨӨЦ FILTER ҮНЭ АСУУВАЛ (тусдаа):
-"Нөөц filter (9-р сарын 1 хүртэл хямдралтай, үндсэн үнэ 44'900₮):
-🔹 Single 29'900₮ · 🔹 Twin 54'900₮ · 🔹 Family 79'900₮ 🌸
-Family хамгийн ашигтай — нэг бүр ~26'600₮."
 
 ▸ STOREPAY / ХУВААГДСАН ТӨЛБӨР АСУУВАЛ:
 "Манайх одоогоор Storepay-ийг дэмжихгүй байна 🌸 Гэхдээ 2 сонголт бий:
@@ -1409,16 +1641,20 @@ CE дугаар: HX240303050484"
 5. Утасны дугаар (системээр автоматаар шалгагдана — чи оронг нь ТООЛОХГҮЙ)
 6. Төлбөрийн арга: "Төлбөрийг яаж хийх вэ? 1️⃣ Урьдчилж банкаар 2️⃣ Авсны дараа жолоочид бэлнээр"
 
-▸ FLOW B — Зөвхөн Filter (29'900₮):
-Нэг нэгээр асуу:
-1. Хэдэн ширхэг (Single 29'900₮ / Twin 54'900₮ / Family 79'900₮)
-2. Бүрэн хаяг
-3. Орцны код
-4. Утасны дугаар
-5. Төлбөрийн арга
+▸ FLOW B — Зөвхөн Нөөц Шүүлтүүр (1 ширхэг 29'900₮):
+⚠️ Тодруулга ("шүршүүр авсан уу?"), үнийн танилцуулга, "яг одоо хүргүүлээд авах уу?"
+   гэсэн 3 алхмыг JS код өөрөө явуулна. Та тэдгээрийг ДАВТАХГҮЙ.
+Хэрэглэгч авахаа зөвшөөрсний дараа зөвхөн ДУТУУ талбарыг нэг нэгээр асуу:
+1. Бүрэн хаяг
+2. Орцны код — "байхгүй бол алгасъя"
+3. Утасны дугаар (оронг нь ТООЛОХГҮЙ)
+4. Төлбөрийн арга
+⛔ ӨНГӨ АСУУХГҮЙ — шүүлтүүрт өнгө байхгүй.
+⛔ Бэлгийн Багц санал болгохгүй.
+Нийт дүн = ширхэг × 29'900₮.
 
 ▸ MISSING FIELD ШАЛГАЛТ:
-Дутуу талбар байвал ЗӨВХӨН ТЭР НЭГИЙГ л асуу — бүх 6-г дахин давтахгүй.
+Дутуу талбар байвал ЗӨВХӨН ТЭР НЭГИЙГ л асуу — бүх талбарыг дахин давтахгүй.
 Жишээ: утас дутуу бол "Утасны дугаараа оруулна уу 🌸"
 Орцны код дутуу бол "Орцны код байгаа уу? Байхгүй бол алгасъя 🌸"
 
@@ -1444,15 +1680,16 @@ CE дугаар: HX240303050484"
 "Мэдээллийг шинэчилье 🌸 [Засах зүйл]-г өөрчиллөө. Бусад мэдээлэл зөв үү?"
 Засвар баталгаажсаны дараа: "Захиалгын мэдээлэл шинэчлэгдлээ ✅ [ORDER_EDIT]"
 
-▸ ЗАХИАЛГА ЦУЦЛАХ ХҮСЭЛТ — v2.8.1 шинэчилсэн:
+▸ ЗАХИАЛГА ЦУЦЛАХ ХҮСЭЛТ:
 🚫 ХЭЗЭЭ Ч cancellation reply бичихгүй. JS код өөрийн логикоор cancellation flow-ийг handle хийнэ.
 Хэрэглэгч "awsny daraa" / "авсны дараа" / "joloochid belneer" гэх payment мэдэгдэл өгөх нь ЦУЦЛАХ БИШ — COD сонголт. Энэ үед [COD_ORDER] tag ашигла.
-Зөвхөн хэрэглэгч ИЛТ "цуцлая", "болиё", "хэрэггүй болсон" гэвэл [HANDOFF_NEEDED] tag нэм — JS код handoff хийж дараагийн алхамыг удирдана.
+Зөвхөн хэрэглэгч ИЛТ "цуцлая", "болиё", "хэрэггүй болсон" гэвэл [HANDOFF_NEEDED] tag нэм.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. ТЕХНИКИЙН МЭДЭЭЛЭЛ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Гарал үүсэл: Европын CE стандартаар Хонгконгт үйлдвэрлэгдэнэ
+• Гарал үүсэл: Герман улсаас гаралтай брэнд, Европын CE стандартын дагуу үйлдвэрлэгдсэн
+• ⛔ Өөр улс (Хонгконг, Хятад, Япон, Солонгос) ХЭЗЭЭ Ч дурдахгүй
 • CE сертификат: HX240303050484
 • Filter бүтэц — РАДИАЛ, гаднаас дотогшоо: PP нэхмэл бус бүрхүүл (цагаан) → Active Carbon шахмал цагираг хана (хар) → Нягтаршуулж Сайжруулсан PP цөм (цагаан)
 • Усны урсгал: гаднаас дотогшоо 3 давхрыг нэвтэрч → голын хөндий сувгаар дээшээ → oval толгой
@@ -1504,14 +1741,17 @@ CE дугаар: HX240303050484"
 ❌ "Pearl White 3-в-1 багц" → ✅ "Бэлгийн Багц (Pearl White)"
 ❌ "ceramic" → ✅ хэрэглэхгүй
 ❌ "KDF" → ✅ "Нягтаршуулж Сайжруулсан PP давхарга"
-❌ "Шүүлтүүр үнэгүй" / "шүүлтүүр бэлгээр дагалдана" / "44'900₮, Үнэгүй" → ✅ "Active Carbon Filter суурилуулсан — 44'900₮" (шүүлтүүр = шүршүүрийн салшгүй хэсэг, бэлэг БИШ)
+❌ "Twin Pack" / "Family Pack" / "Single Pack" / "Single" → ✅ "1 ширхэг — 29'900₮" (өөр багц БАЙХГҮЙ)
+❌ "Шүүлтүүр үнэгүй" / "шүүлтүүр бэлгээр дагалдана" → ✅ "Active Carbon Filter суурилуулсан — 44'900₮"
 ❌ "хүнд металл шүүнэ" / "бактер устгана" → ✅ "хлор, шохой, зэв, эвгүй үнэр"
 ❌ "Rose Red" / "криминал улаан" → ✅ "Slate Gray (дотор час улаан / crimson цагираг)"
 ❌ "шүршүүр хийх" → ✅ "усанд орох"
 ❌ "199,900₮" → ✅ "199'900₮"
+❌ "~~269'000₮~~" → ✅ "269'000₮ ➜ 199'900₮"
+❌ "Хонгконг" / "Хятад" / "Made in China" → ✅ "Герман улсаас гаралтай, Европын CE стандарт"
 ❌ "запас" → ✅ "нөөц" (запас зөвхөн хэрэглэгчийн үгийг таних дотоод keyword)
 ❌ 5+ мөрийн хариулт (хэрэв асуугаагүй бол) → ✅ богино, дараа нь дэлгэрнэ
-❌ Хэрэглэгчийн алдаатай үгийг засаж сургах → ✅ хэзээ ч засахгүй
+❌ Хэрэглэгчийн алдаатай үгийг эсвэл Латин бичлэгийг засаж сургах → ✅ хэзээ ч засахгүй
 
 ЧУХАЛ: [HANDOFF_NEEDED], [ORDER_EDIT], [COD_ORDER] тагуудыг хэрэглэгчид харуулахгүй — код дотор strip хийнэ.`;
 
@@ -1521,9 +1761,11 @@ const COMMENT_DM_PROMPT = `Та SkinBloom брэндийн AI туслах юм.
 • 1-2 өгүүлбэр, товч, найрсаг
 • Нэрээр нь хандана (жишээ: "Сайн байна уу Бат? 🌸")
 • Message Request шалгахыг хүс: "Message Request хэсэгээ шалгаарай 🌸"
-• Шүүлтүүр асуувал: "Тийм, нөөц Active Carbon Filter байгаа! 29'900₮. Дэлгэрэнгүй мэдээлэл явуулсан 🌸"
+• Шүүлтүүр асуувал: "Тийм, нөөц Active Carbon Filter байгаа! Дэлгэрэнгүйг DM-ээр явуулсан 🌸" — үнийг ЭНД хэлэхгүй, DM-д тодруулга хийнэ
 • Захиалах асуувал: "skinbloom.store-с захиалж болно 🌸"
+• Латинаар бичсэн comment-ийг ойлгож, хариултаа ҮРГЭЛЖ Кириллээр бич
 • "KDF", "хүнд металл", "бактер" гэж ХЭЗЭЭ Ч бичихгүй
+• "Twin Pack", "Family Pack", "Single Pack" гэж ХЭЗЭЭ Ч бичихгүй — байхгүй
 • Багц доторх шүүлтүүрийг "үнэгүй" эсвэл "бэлгээр дагалдана" гэж ХЭЗЭЭ Ч бичихгүй`;
 
 const conversations = new Map();
@@ -1559,8 +1801,6 @@ async function askGPT_DM(senderId, userText, stateNote = null) {
     { role: 'system', content: SYSTEM_PROMPT },
     ...getHistory(senderId).slice(-MAX_HISTORY)
   ];
-  // v2.9.2: JS-ийн цуглуулсан slot-уудыг сүүлийн system note болгож оруулна.
-  // Хамгийн сүүлд байрлуулсан тул LLM-д хамгийн их жинтэй нөлөөлнө.
   if (stateNote) messages.push({ role: 'system', content: stateNote });
   const res = await axios.post('https://api.openai.com/v1/chat/completions', {
     model: 'gpt-4o-mini', messages, temperature: 0.5, max_tokens: 500
@@ -1680,11 +1920,6 @@ app.post('/webhook', async (req, res) => {
 
     for (const event of (entry.messaging || [])) {
       // ── ADMIN/PAGE TAKEOVER DETECT (echo event) — v2.8.7 (app_id-based) ──
-      // v2.8.7 ROOT FIX: текст-based echo шүүлтийг (isBotOwnEcho / isAdminTakeover)
-      // бүрэн орлуулж, app_id-аар ялгана. Facebook нь Send API-аар явсан bot-ийн
-      // мессежийн echo-д app_id өгдөг; хүн Page inbox-оос ГАРААР бичсэн мессежид
-      // app_id БАЙХГҮЙ. Энэ нь restart-д арчигддаггүй, текст таарахаас хамааралгүй
-      // найдвартай ялгаа — mass false-handoff-ийг устгана.
       if (event.message?.is_echo) {
         const echoText = event.message?.text || '';
         const recipientId = event.recipient?.id;
@@ -1717,25 +1952,21 @@ app.post('/webhook', async (req, res) => {
 
       // ═══════════════════════════════════════════════════════
       // ATTACHMENT HANDLING (v2.8.0) — image/video/voice/sticker/file
-      // → ШУУД handoff + Telegram alert (vision биш, manual нягтлал)
       // ═══════════════════════════════════════════════════════
       if (!text && attachments?.length > 0) {
         const attType = attachments[0]?.type;
         const attUrl = attachments[0]?.payload?.url || '';
 
-        // Дараалсан attachment dedupe
         if (isDuplicateAttachment(senderId)) {
           console.log(`⏭ Duplicate attachment — skipping [${senderId}]`);
           continue;
         }
 
-        // Sticker — зөвхөн emoji-like reaction юм, хариу хэрэггүй
         if (attType === 'sticker') {
           console.log(`👍 Sticker [${senderId}] — quiet acknowledge`);
           continue;
         }
 
-        // Image / video / audio / file → handoff
         if (['image', 'video', 'audio', 'file'].includes(attType)) {
           console.log(`📎 Attachment [${attType}] [${senderId}] → handoff`);
           addHandoff(senderId);
@@ -1752,8 +1983,7 @@ app.post('/webhook', async (req, res) => {
       if (!text) continue;
 
       // ═══════════════════════════════════════════════════════
-      // PRIORITY-ORDERED TRIGGER CHECKS (v2.8.0)
-      // Дараах дарааллаар шалгана — өндөр приоритеттэй эхэлж
+      // PRIORITY-ORDERED TRIGGER CHECKS
       // ═══════════════════════════════════════════════════════
 
       // 1) COMPLAINT — гомдол ноцтой → шууд handoff + 3 draft
@@ -1766,14 +1996,72 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 2) CANCELLATION RECOVERY — Cancellation flow дотор хэрэглэгч "цуцлах гэж хэлээгүй"
-      // гэж денайл хийвэл flow-аас гарч, захиалгыг сэргээж, цааш үргэлжлүүлэх.
-      // v2.8.1 шинэ: bot ёжтой буруу cancellation-р алддагүй болох
+      // ═══════════════════════════════════════════════════════
+      // 1.5) ШҮҮЛТҮҮРИЙН FLOW STATE (NEW v2.9.3)
+      // ⚠️ ЗААВАЛ cancellation шалгалтаас ӨМНӨ байна. Учир нь хэрэглэгч
+      // "аваагүй" гэж хариулах нь CANCELLATION_KEYWORDS-д байдаг тул
+      // энэ блокгүй бол ердийн "үгүй" хариулт ЗАХИАЛГА ЦУЦЛАХ болж хувирна.
+      // Зөвхөн filterStage идэвхтэй үед л ажиллана — өөр үед огт нөлөөлөхгүй.
+      // ═══════════════════════════════════════════════════════
+      const filterCtx = getOrder(senderId) || {};
+
+      if (filterCtx.filterStage === 'ownership_asked') {
+        if (isNegativeAnswer(text)) {
+          console.log(`🧴 Filter: шүршүүр аваагүй [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_NO_SHOWER_ANSWER);
+          setOrder(senderId, { ...filterCtx, filterStage: null, orderType: 'BUNDLE', status: 'collecting' });
+          await sendDM(senderId, FILTER_NO_SHOWER_ANSWER);
+          continue;
+        }
+        if (isAffirmativeAnswer(text) || isBuyIntent(text)) {
+          console.log(`🧴 Filter: шүршүүр эзэмшдэг → үнэ үзүүлэв [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_PRICE_ANSWER);
+          setOrder(senderId, {
+            ...filterCtx, filterStage: 'price_shown', filterOwner: true,
+            orderType: 'FILTER', qty: filterCtx.qty || 1, status: 'collecting'
+          });
+          await sendDM(senderId, FILTER_PRICE_ANSWER);
+          continue;
+        }
+        // Тодорхойгүй хариулт → stage-ээ цэвэрлээд LLM-д даатгана (гацахгүй)
+        setOrder(senderId, { ...filterCtx, filterStage: null });
+      }
+
+      if (filterCtx.filterStage === 'price_shown') {
+        if (isNegativeAnswer(text)) {
+          console.log(`🧴 Filter: одоо авахгүй [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_DECLINE_ANSWER);
+          setOrder(senderId, { ...filterCtx, filterStage: null });
+          await sendDM(senderId, FILTER_DECLINE_ANSWER);
+          continue;
+        }
+        // Зөвшөөрсөн ч, тодорхойгүй хариулсан ч — аль ч тохиолдолд ШҮҮЛТҮҮРИЙН
+        // захиалга хэвээр үлдэж, LLM хаяг/утас/төлбөрийг цуглуулна.
+        const wantsIt = isAffirmativeAnswer(text) || isBuyIntent(text);
+        setOrder(senderId, {
+          ...filterCtx, filterStage: 'collecting', orderType: 'FILTER',
+          qty: filterCtx.qty || 1, status: 'collecting'
+        });
+        // Хэрэглэгч зөвшөөрөхийн ЗЭРЭГЦЭЭ хаягаа нэг мессежэнд бичсэн бол
+        // ("тэгье, БЗД 26-р хороо 15-р байр") хаягийг дахин асуухгүй —
+        // slot fill + LLM рүү унана.
+        if (wantsIt && !filterCtx.address && !looksLikeAddress(text)) {
+          console.log(`🧴 Filter: захиалга эхэллээ [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_ADDRESS_ASK);
+          await sendDM(senderId, FILTER_ADDRESS_ASK);
+          continue;
+        }
+      }
+
+      // 2) CANCELLATION RECOVERY
       const existingOrder = getOrder(senderId);
       if (existingOrder && existingOrder.cancelStage === 'reason_asked' && isCancellationDenial(text)) {
         console.log(`🔄 Cancellation denial — recovering [${senderId}]: ${text.slice(0, 60)}`);
         addToHistory(senderId, 'user', text);
-        // Cancel state-ийг арилгана, захиалгыг сэргээнэ
         delete existingOrder.cancelStage;
         existingOrder.status = 'placed';
         setOrder(senderId, existingOrder);
@@ -1786,10 +2074,8 @@ app.post('/webhook', async (req, res) => {
       if (isCancellationRequest(text)) {
         console.log(`❌ Cancellation request [${senderId}]: ${text.slice(0, 60)}`);
         addToHistory(senderId, 'user', text);
-        // Захиалга байгаа эсэхийг шалгах
         if (existingOrder && existingOrder.status === 'placed') {
           if (existingOrder.cancelStage === 'reason_asked') {
-            // Хэрэглэгч шалтгаан өгсөн (эсвэл татгалзсан)
             const negativeReplies = /за яахав|битгий асуу|болсон|болсон шдээ|hereggu|kheregui|asuukhgui/i;
             const isNegative = negativeReplies.test(text);
             await sendDM(senderId, isNegative
@@ -1798,11 +2084,9 @@ app.post('/webhook', async (req, res) => {
             await notifyTelegramCancellation(senderId, isNegative ? '(шалтгаан хэлэхээс татгалзав)' : text, 'cancelled');
             existingOrder.status = 'cancelled';
             setOrder(senderId, existingOrder);
-            // Bot continue хариулахгүй
             addHandoff(senderId);
             continue;
           } else {
-            // Шалтгаан асуух
             await sendDM(senderId, 'Уучлаарай, захиалгыг тань цуцлахаас өмнө бид яагаад болсныг ойлгох сонирхолтой байна 🌸 Танд яагаад тохирохгүй болсон бэ? (хэт удаан / үнэ / өөр сонголт сонирхож байгаа / гэх мэт)');
             existingOrder.cancelStage = 'reason_asked';
             setOrder(senderId, existingOrder);
@@ -1810,7 +2094,6 @@ app.post('/webhook', async (req, res) => {
             continue;
           }
         } else {
-          // Order байхгүй ч цуцлах хүсэлт ирэх → handoff
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '🌸 Таны хүсэлтийг хүлээн авлаа. Манай менежер удахгүй холбогдох болно.');
           await notifyTelegramCancellation(senderId, text, 'requested');
@@ -1818,7 +2101,7 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // 3) USER ASKS FOR HUMAN — менежер/оператор/очиж үзэх → handoff
+      // 4) USER ASKS FOR HUMAN — менежер/оператор/очиж үзэх → handoff
       if (isUserHandoffRequest(text)) {
         console.log(`🤝 User handoff request [${senderId}]: ${text.slice(0, 60)}`);
         addHandoff(senderId);
@@ -1828,7 +2111,7 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 4) PROVINCE DELIVERY — орон нутгийн хүргэлт → handoff
+      // 5) PROVINCE DELIVERY — орон нутгийн хүргэлт → handoff
       if (isProvinceDelivery(text)) {
         console.log(`🚛 Province delivery [${senderId}]: ${text.slice(0, 60)}`);
         addHandoff(senderId);
@@ -1838,7 +2121,7 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 5) WHOLESALE — оптын/4+ ширхэг → handoff
+      // 6) WHOLESALE — оптын/4+ ширхэг → handoff
       if (isWholesaleRequest(text)) {
         console.log(`🏪 Wholesale [${senderId}]: ${text.slice(0, 60)}`);
         addHandoff(senderId);
@@ -1848,7 +2131,7 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 6) PRICE MANIPULATION — үнэ буулгах хүсэлт → handoff
+      // 7) PRICE MANIPULATION — үнэ буулгах хүсэлт → handoff
       if (isPriceManipulation(text)) {
         console.log(`💸 Price manipulation [${senderId}]: ${text.slice(0, 60)}`);
         addHandoff(senderId);
@@ -1858,10 +2141,67 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
-      // 7) UGC / INFLUENCER (one-time notify, бот үргэлжлүүлэн ажиллана)
+      // 8) UGC / INFLUENCER (one-time notify, бот үргэлжлүүлэн ажиллана)
       if (isUGCOrInfluencer(text)) {
         console.log(`📸 UGC/Influencer detected [${senderId}]`);
         await notifyTelegramUGC(senderId, text);
+      }
+
+      // ═══════════════════════════════════════════════════════
+      // 9) ГАРАЛ ҮҮСЭЛ (NEW v2.9.3) — "аль улсынх вэ", "haanahiih ve"
+      // ═══════════════════════════════════════════════════════
+      if (isOriginQuestion(text)) {
+        console.log(`🌍 Origin question [${senderId}]: ${text.slice(0, 60)}`);
+        addToHistory(senderId, 'user', text);
+        addToHistory(senderId, 'assistant', ORIGIN_ANSWER);
+        await sendDM(senderId, ORIGIN_ANSWER);
+        continue;
+      }
+
+      // ═══════════════════════════════════════════════════════
+      // 10) ШҮҮЛТҮҮРИЙН ҮНЭ / ЗАХИАЛГА (NEW v2.9.3)
+      // Үнэ хэлэхээс ӨМНӨ заавал "шүршүүрээ авсан уу?" тодруулга.
+      // ⚠️ Үнийн ерөнхий hook-оос ӨМНӨ шалгана — эс тэгвэл "шүүлтүүр үнэ хэд вэ"
+      // гэсэн асуулт Бэлгийн Багцын үнээр хариулагдана.
+      // ═══════════════════════════════════════════════════════
+      if (hasFilterWord(text) && (isPriceQuestion(text) || isBuyIntent(text))) {
+        const fState = getOrder(senderId) || {};
+        // Аль хэдийн "шүршүүрээ авсан" гэдгээ хэлсэн бол дахин асуухгүй
+        if (fState.filterOwner) {
+          console.log(`🧴 Filter intent (эзэмшигч мэдэгдсэн) [${senderId}]`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_PRICE_ANSWER);
+          setOrder(senderId, {
+            ...fState, filterStage: 'price_shown', orderType: 'FILTER',
+            qty: fState.qty || 1, status: 'collecting'
+          });
+          await sendDM(senderId, FILTER_PRICE_ANSWER);
+        } else {
+          console.log(`🧴 Filter intent → эзэмшлийн тодруулга [${senderId}]: ${text.slice(0, 60)}`);
+          addToHistory(senderId, 'user', text);
+          addToHistory(senderId, 'assistant', FILTER_OWNERSHIP_ASK);
+          setOrder(senderId, { ...fState, filterStage: 'ownership_asked', status: fState.status || 'collecting' });
+          await sendDM(senderId, FILTER_OWNERSHIP_ASK);
+        }
+        markGreeting(senderId);
+        continue;
+      }
+
+      // ═══════════════════════════════════════════════════════
+      // 11) ҮНИЙН АСУУЛТ (NEW v2.9.3) — Бэлгийн Багцын детерминистик hook
+      // ⚠️ Захиалга аль хэдийн баталгаажсан бол хөндөхгүй (LLM-д үлдээнэ).
+      // ═══════════════════════════════════════════════════════
+      const priceState = getOrder(senderId) || {};
+      if (isPriceQuestion(text)
+        && priceState.status !== 'placed'
+        && priceState.orderType !== 'FILTER'
+        && !hasFilterWord(text)) {
+        console.log(`💰 Price question [${senderId}]: ${text.slice(0, 60)}`);
+        addToHistory(senderId, 'user', text);
+        addToHistory(senderId, 'assistant', PRICE_ANSWER);
+        await sendDM(senderId, PRICE_ANSWER);
+        markGreeting(senderId);
+        continue;
       }
 
       // ═══════════════════════════════════════════════════════
@@ -1872,12 +2212,12 @@ app.post('/webhook', async (req, res) => {
 
       // ═══════════════════════════════════════════════════════
       // DIRECT INFO REQUEST (v2.8.0)
-      // "мэдээлэл авъя", "шүршүүрийн тухай" гэх direct query →
-      // greeting bypass, шууд бүх 3 өнгө + bundle
+      // v2.9.3: шүүлтүүрийн үг агуулсан бол ЭНД БАРИХГҮЙ — LLM-д даана,
+      // эс тэгвэл "шүүлтүүрийн тухай дэлгэрэнгүй" гэхэд Бэлгийн Багц pitch хийнэ.
       // ═══════════════════════════════════════════════════════
-      if (isDirectInfoRequest(text)) {
+      if (isDirectInfoRequest(text) && !hasFilterWord(text)) {
         console.log(`ℹ️ Direct info request [${senderId}]`);
-        const infoMessage = `SkinBloom Бэлгийн Багц — 199'900₮ 🎁 (~~269'000₮~~)
+        const infoMessage = `SkinBloom Бэлгийн Багц 269'000₮ ➜ 199'900₮ 🎁
 
 Бүх 3 өнгөнд ижил үнэ, ижил бүрэлдэхүүн:
 ⬛ Obsidian Black — мөнгөлөг цагираг, premium гүн хар
@@ -1901,10 +2241,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       // ═══════════════════════════════════════════════════════
-      // PHONE INPUT VALIDATION (NEW v2.9.2) — LLM-д ХҮРГЭХГҮЙ
-      // Шалтгаан: GPT-4o-mini оронг найдвартай тоолж чаддаггүй тул
-      // "95113550" гэсэн ЗӨВ дугаарыг "8 оронтой оруулна уу" гэж буруу
-      // татгалздаг байв. Одоо шалгалт бүхэлдээ JS-д — LLM-д огт ирэхгүй.
+      // PHONE INPUT VALIDATION (v2.9.2) — LLM-д ХҮРГЭХГҮЙ
       // ═══════════════════════════════════════════════════════
       const phoneCheck = validatePhoneInput(text);
       if (phoneCheck.isAttempt && !phoneCheck.valid) {
@@ -1924,7 +2261,6 @@ app.post('/webhook', async (req, res) => {
 
       // ═══════════════════════════════════════════════════════
       // BATCH SLOT FILLING (v2.8.0)
-      // Хэрэглэгч нэг мессежэнд олон slot өгсөн бол ялгах
       // ═══════════════════════════════════════════════════════
       const currentOrder = getOrder(senderId) || { status: 'collecting' };
       if (currentOrder.status === 'collecting' || !currentOrder.status) {
@@ -1932,6 +2268,7 @@ app.post('/webhook', async (req, res) => {
         if (parsed.color || parsed.address || parsed.phone || parsed.payment) {
           setOrder(senderId, { ...parsed, status: 'collecting' });
           console.log(`📝 Slot fill [${senderId}]: ${JSON.stringify({
+            type: parsed.orderType || 'BUNDLE',
             color: parsed.color, qty: parsed.qty, address: parsed.address?.slice(0, 30),
             phone: parsed.phone, payment: parsed.payment, code: parsed.entranceCode
           })}`);
@@ -1940,15 +2277,13 @@ app.post('/webhook', async (req, res) => {
 
       console.log(`📩 DM [${senderId}]: ${text.slice(0, 60)}`);
       try {
-        // ── FIRST-CONTACT GREETING (v2.8.5, race-safe v2.8.6) — детерминистик, LLM-д хүргэхгүй ──
+        // ── FIRST-CONTACT GREETING (v2.8.5, race-safe v2.8.6) ──
         if (isPureGreeting(text)) {
           if (hasRecentGreeting(senderId)) {
-            // 5 минутын дотор аль хэдийн мэндэлсэн — давхар greeting явуулахгүй
             addToHistory(senderId, 'user', text);
             await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
             continue;
           }
-          // markGreeting-ийг await-аас ӨМНӨ тавьж зэрэг ирсэн олон "hi"-аас давхар greeting гарахаас сэргийлнэ
           markGreeting(senderId);
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', GREETING_MESSAGE);
@@ -1957,7 +2292,6 @@ app.post('/webhook', async (req, res) => {
           continue;
         }
 
-        // greetingPattern-д таарсан ч pure биш (жишээ "сайн уу багц авъя") — markGreeting тавиад LLM руу
         if (isGreeting && hasRecentGreeting(senderId)) {
           await sendDM(senderId, 'Тантай ярилцаж байна 🌸 Юу тусалцгаая?');
           addToHistory(senderId, 'user', text);
@@ -1975,7 +2309,6 @@ app.post('/webhook', async (req, res) => {
         const isCOD = isCODOrder(reply) || reply.includes('[COD_ORDER]');
         const isBank = reply.includes('[BANK_ORDER]');
         const isOrderEdit = reply.includes('[ORDER_EDIT]') || isOrderEditRequest(text);
-        // v2.8.1: isCancelAsk / isCancelConfirmed устгасан — JS-only cancellation handling
 
         // Tag-уудыг арилгана
         let cleanReply = reply
@@ -1985,11 +2318,9 @@ app.post('/webhook', async (req, res) => {
           .replace('[BANK_ORDER]', '')
           .replace('[CANCEL_REASON_ASK]', '')
           .replace('[CANCEL_CONFIRMED]', '')
-          .replace(/\[[^\]]+\]/g, '') // Үлдсэн placeholder-уудыг арилгана
+          .replace(/\[[^\]]+\]/g, '')
           .trim();
 
-        // v2.8.1 SAFEGUARD: order confirm reply дотор "(... тодруулагдана)" гэх
-        // round-bracket placeholder байвал тэр мөрүүдийг хасна — spam-shig харагдахаас сэргийлнэ
         if (/тодруулагдана|to be confirmed/i.test(cleanReply)) {
           cleanReply = cleanReply
             .split('\n')
@@ -1999,15 +2330,11 @@ app.post('/webhook', async (req, res) => {
             .trim();
         }
 
-        // cleanReply хоосон болсон бол (бүх агуулга нь tag/placeholder байсан) → safety message
         if (!cleanReply) {
           cleanReply = 'Таны захиалгыг хүлээн авлаа ✅';
         }
 
         // ── v2.9.2 GUARD #1: ДАВХАР GREETING ──
-        // LLM нь SYSTEM_PROMPT-ийн 1-р хэсгийн улмаас JS аль хэдийн явуулсан
-        // мэндчилгээг дахин үүсгэдэг байв (screenshot: 2 удаа дараалан).
-        // Greeting-ийн гарын үсгийг таньж, давхардвал богино үргэлжлэл болгоно.
         if (cleanReply.includes('SkinBloom AI туслах тантай холбогдлоо')) {
           if (hasRecentGreeting(senderId)) {
             console.log(`🔁 Duplicate greeting suppressed [${senderId}]`);
@@ -2018,20 +2345,38 @@ app.post('/webhook', async (req, res) => {
         }
 
         // ── v2.9.2 GUARD #2: УТАСНЫ АЛДААНЫ МЕССЕЖ ──
-        // LLM хэдийгээр хатуу хоригтой ч заримдаа "8 оронтой" гэж гаргаж
-        // мэднэ. Утас аль хэдийн баталгаажсан байхад ийм мессеж явуулахыг
-        // сүүлийн хамгаалалт болгон бүрэн таслана.
         const stOrder = getOrder(senderId) || {};
         if (stOrder.phone && /8\s*орон|найман орон|дугаар.*буруу|дугаараа.*дахин/i.test(cleanReply)) {
           console.log(`🛑 LLM phone-error suppressed [${senderId}] (phone=${stOrder.phone})`);
           const missing = [];
-          if (!stOrder.color) missing.push('Аль өнгийг сонгох вэ? (Pearl White / Slate Gray / Obsidian Black) 🌸');
-          else if (!stOrder.qty) missing.push('Хэдэн ширхэг авах вэ? 🌸');
+          if (stOrder.orderType !== 'FILTER' && !stOrder.color) missing.push('Аль өнгийг сонгох вэ? (Pearl White / Slate Gray / Obsidian Black) 🌸');
+          else if (stOrder.orderType !== 'FILTER' && !stOrder.qty) missing.push('Хэдэн ширхэг авах вэ? 🌸');
           else if (!stOrder.address) missing.push('Хүргэлтийн бүрэн хаягаа явуулна уу (дүүрэг, хороо, байр, тоот) 🌸');
           else if (!stOrder.payment) missing.push('Төлбөрийг яаж хийх вэ? 1️⃣ Урьдчилж банкаар 2️⃣ Авсны дараа жолоочид бэлнээр 🌸');
           cleanReply = missing.length
             ? `Дугаарыг тань хүлээн авлаа ✅ ${missing[0]}`
             : 'Дугаарыг тань хүлээн авлаа ✅ Танд өөр тодруулах зүйл байна уу? 🌸';
+        }
+
+        // ── v2.9.3 GUARD #3: TWIN / FAMILY PACK ──
+        // Багцууд SYSTEM_PROMPT-оос устсан ч 4o-mini хуучин ярианаас
+        // санаж гаргах эрсдэл үлддэг. Гарвал таслаад зөв текстээр солино.
+        if (/twin\s*pack|family\s*pack|single\s*pack|54'?900|79'?900|89'?800|134'?700/i.test(cleanReply)) {
+          console.log(`🛑 Twin/Family pack mention suppressed [${senderId}]`);
+          // Эзэмшлийн тодруулга хийгээгүй бол ҮНИЙГ ХАРУУЛАХГҮЙ — эхлээд тодруулна.
+          if (stOrder.filterOwner) {
+            cleanReply = FILTER_PRICE_ANSWER;
+            setOrder(senderId, { ...stOrder, filterStage: 'price_shown', orderType: 'FILTER', qty: stOrder.qty || 1 });
+          } else {
+            cleanReply = FILTER_OWNERSHIP_ASK;
+            setOrder(senderId, { ...stOrder, filterStage: 'ownership_asked', status: stOrder.status || 'collecting' });
+          }
+        }
+
+        // ── v2.9.3 GUARD #4: ГАРАЛ ҮҮСЛИЙН ЗӨРЧИЛ ──
+        if (/хонгконг|хонг конг|hong\s*kong|хятад|hyatad|made in china/i.test(cleanReply)) {
+          console.log(`🛑 Wrong-origin mention suppressed [${senderId}]`);
+          cleanReply = ORIGIN_ANSWER;
         }
 
         await sendDM(senderId, cleanReply);
@@ -2040,31 +2385,33 @@ app.post('/webhook', async (req, res) => {
         if (isOrder || isCOD || isBank) {
           console.log(`🛍 Order complete [${senderId}] COD=${isCOD} BANK=${isBank}`);
 
-          // BUG #1 FIX (v2.8.1):
-          // LLM өөрөө reply дотор бүх захиалгын мэдээллийг бичсэн бол JS дахин нэмэхгүй.
-          // Илрүүлэх дохио: LLM reply дотор "Өнгө:", "Хаяг:", "Утас:" гэх label бий бөгөөд placeholder-биш утга агуулж буй
           const llmAlreadyAssembled = /(?:өнгө|өнгь|color)\s*[:：]/i.test(cleanReply)
             && /(?:хаяг|address)\s*[:：]/i.test(cleanReply)
             && /(?:утас|phone|дугаар)\s*[:：]/i.test(cleanReply)
             && !/тодруулагдана|to be confirmed|байхгүй|тогтоох/i.test(cleanReply);
 
           const orderState = getOrder(senderId) || {};
-          const hasFullState = orderState.color && orderState.address && orderState.phone;
+          const isFilterOrder = orderState.orderType === 'FILTER';
 
-          // JS-р order details assembly хийх нь зөвхөн дараах нөхцөлд:
-          //  (a) LLM reply дотор аль хэдийн full details байхгүй
-          //  (b) AND JS state-д бүрэн мэдээлэл бий
+          // v2.9.3: ШҮҮЛТҮҮРИЙН захиалгад ӨНГӨ шаардлагагүй
+          const hasFullState = isFilterOrder
+            ? Boolean(orderState.address && orderState.phone)
+            : Boolean(orderState.color && orderState.address && orderState.phone);
+
           if (!llmAlreadyAssembled && hasFullState) {
-            const color = orderState.color;
             const qty = orderState.qty || 1;
-            const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+            const unit = unitPriceFor(orderState);
+            const total = formatMNT(qty * unit);
             const address = orderState.address;
             const phone = orderState.phone;
 
+            const productBlock = isFilterOrder
+              ? `📦 Бүтээгдэхүүн: Нөөц Шүүлтүүр\n📦 Тоо: ${qty} ширхэг`
+              : `🎨 Өнгө: ${orderState.color}\n📦 Тоо: ${qty} ширхэг`;
+
             const orderDetails = `📋 Захиалгын мэдээлэл:
 
-🎨 Өнгө: ${color}
-📦 Тоо: ${qty} ширхэг
+${productBlock}
 💰 Нийт: ${total}
 📍 Хаяг: ${address}
 📞 Утас: ${phone}
@@ -2072,7 +2419,6 @@ app.post('/webhook', async (req, res) => {
 24–48 цагт хүргэгдэнэ 🌸 Манайхыг сонгосонд баярлалаа!`;
             await sendDM(senderId, orderDetails);
           } else if (!llmAlreadyAssembled && !hasFullState) {
-            // State дутуу + LLM-аас гаргаагүй → safety net (handoff)
             console.log(`⚠️ Order tag detected but incomplete state — handoff [${senderId}]`);
             addHandoff(senderId);
             await sendDMWithHumanAgent(senderId, '🌸 Захиалгын мэдээллийг нягтлах хэрэгцээтэй учир манай менежер тантай удахгүй холбогдох болно.');
@@ -2097,7 +2443,7 @@ app.post('/webhook', async (req, res) => {
           } else if (isCOD && !llmHasCodInfo) {
             const orderStateForCod = getOrder(senderId) || {};
             const qty = orderStateForCod.qty || 1;
-            const total = (qty * 199900).toLocaleString('en-US').replace(/,/g, "'") + '₮';
+            const total = formatMNT(qty * unitPriceFor(orderStateForCod));
             const codMsg = `Хүргэлт ирэхэд жолоочид ${total} төлбөрөө өгнө үү 🌸`;
             await sendDM(senderId, codMsg);
           }
@@ -2109,15 +2455,11 @@ app.post('/webhook', async (req, res) => {
           await notifyTelegramOrderEdit(senderId, text);
         }
 
-        // v2.8.1: [CANCEL_REASON_ASK] болон [CANCEL_CONFIRMED] tag handling-ийг УСТГАСАН.
-        // Cancellation flow-ийг бүхэлд нь JS keyword detection-аар удирдах болсон.
-        // Ингэснээр LLM өөрөө буруу cancellation triggered хийх боломжгүй.
-
         if (isHandoff && !isOrder && !isCOD && !isBank) {
           addHandoff(senderId);
           await sendDMWithHumanAgent(senderId, '⏳ Манай менежер удахгүй тантай холбогдох болно 🌸');
           await notifyTelegramHandoff(senderId, text);
-          console.log(`🤝 Handoff [${senderId}] — ${reply.includes('[HANDOFF_NEEDED]') ? 'tag' : 'keyword'}`);
+          console.log(`🤝 Handoff [${senderId}] — tag`);
         }
 
       } catch (e) {
@@ -2365,7 +2707,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.4',
+  status: '🌸 SkinBloom Bot running', version: '2.9.3',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2392,7 +2734,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.4 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.3 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.4 асаалаа!</b>\n\n🆕 <b>Засвар (v2.9.4):</b>\n✅ Шүүлтүүр үнэ: "1ш Нөөц Шүүлтүүр" (Single гэж хэлэхгүй)\n✅ Гарал үүсэл асуултад CE + Хонгконг (Герман биш)\n✅ Twin/Family residual бүрэн цэвэрлэгдсэн\n\n<b>v2.9.3:</b> Үнэ template + filter тодруулга + pack хасалт\n<b>v2.9.2:</b> Утасны validation root fix\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.3 асаалаа!</b>\n\n🆕 <b>Шинэ (v2.9.3):</b>\n✅ Үнэ асуухад детерминистик hook (JS-ээс)\n✅ Шүүлтүүрийн үнэ хэлэхээс өмнө "шүршүүр авсан уу?" тодруулга\n✅ Twin Pack / Family Pack бүрэн устгав — зөвхөн 1ш 29\'900₮\n✅ Латин бичлэг (une hed ve, filter avya, haanahiih ve) танина\n✅ Гарал үүсэл: Герман, Европын CE стандарт\n✅ Messenger-т эвдэрдэг ~~зураас~~ → ➜ сум болов\n\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.1:</b> Шүүлтүүр "үнэгүй" сигнал хасагдав\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

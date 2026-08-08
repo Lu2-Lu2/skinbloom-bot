@@ -374,6 +374,7 @@ const NEGATIVE_WORDS = [
   'биш', 'bish', 'бишээ',
   'аваагүй', 'аваагуй', 'авагүй', 'авахгүй', 'аваахгүй',
   'avaagui', 'avaagvi', 'awaagui', 'avagui', 'avahgui', 'avahgvi',
+  'awahgui', 'awahgvi', 'awhgui', 'avhgui', 'awagui',
   'байхгүй', 'байхгуй', 'baihgui', 'baihgvi', 'baikhgui',
   'алга', 'alga', 'хараахан', 'haraahan', 'kharaakhan',
   'одоохондоо', 'odoohondoo', 'дараа', 'daraa'
@@ -382,6 +383,9 @@ const NEGATIVE_WORDS = [
 const BUY_STEMS = [
   'авъя', 'авья', 'авая', 'авъё', 'авмаар', 'авах', 'авна', 'авч', 'авчих', 'авъяа',
   'avya', 'avia', 'awya', 'awia', 'avmaar', 'avah', 'avakh', 'avna', 'avch',
+  'awmaar', 'awah', 'awakh', 'awna', 'awch', 'awchih',
+  'awii', 'avii', 'awiy', 'aviy', 'авий', 'авьи',
+  'awaad', 'avaad', 'awiya', 'aviya',
   'захиал', 'zahial', 'zakhial', 'zahyal',
   'худалдан', 'hudaldan', 'khudaldan', 'hudaldaj',
   'order', 'оrder', 'хүргүүл', 'hurguul', 'khurguul'
@@ -506,6 +510,26 @@ const BUNDLE_DETAIL_ANSWER = `💎 Бэлгийн Багц дотор юу ба�
 🎨 3 өнгө: 🤍 Pearl White · 🩶 Slate Gray · ⬛ Obsidian Black
 
 Аль өнгийг сонгох уу? 🌸`;
+
+// 1c) ШҮРШҮҮР/БАГЦ АВАХ интент — өнгө сонгуулах (NEW v2.9.6)
+const BUNDLE_COLOR_ASK = `Тэгье 🌸 Бэлгийн Багц — 199'900₮ (69'100₮ хэмнэлт)
+
+⬛ Obsidian Black — мөнгөлөг цагираг, premium гүн хар
+🤍 Pearl White — дулаан гэрэлтэй, цэвэр цайвар төрх
+🩶 Slate Gray — час улаан дотоод цагираг, тансаг бараан тон
+
+Бүх өнгөнд ижил үнэ, ижил бүрэлдэхүүн. Та аль өнгийг сонгох вэ?`;
+
+// 1d) ОЙЛГОМЖГҮЙ мессежид — handoff БИШ, тодруулах асуулт (NEW v2.9.6)
+// ⚠️ Хэрэглэгчийг "ойлголтын зөрүү" гэж хэлээд менежер рүү хаях нь борлуулалт
+//    алдах хамгийн хурдан зам. Оронд нь сонголт өгч яриаг үргэлжлүүлнэ.
+const CLARIFY_ASK = `Мэдээж 🌸 Юуны талаар дэлгэрэнгүй мэдэхийг хүсэж байна вэ?
+
+1️⃣ Бэлгийн Багцын бүрэлдэхүүн ба үнэ
+2️⃣ Шүүлтүүр хэрхэн ажилладаг
+3️⃣ Хүргэлт, төлбөрийн нөхцөл
+
+Эсвэл "Менежер" гэж бичээд манай ажилтантай шууд холбогдож болно.`;
 
 // 2) ШҮҮЛТҮҮР — үнэ хэлэхээс ӨМНӨХ заавал тодруулга
 const FILTER_OWNERSHIP_ASK = `Нөөц шүүлтүүрийн талаар уу? 🌸
@@ -980,10 +1004,62 @@ const DIRECT_INFO_KEYWORDS = [
   'product info', 'товч танилцуул', 'танилцуул'
 ];
 
+// ── БҮТЭЭГДЭХҮҮН / МЭДЭЭЛЛИЙН STEM-үүд (NEW v2.9.6) ──
+// v2.9.5-ийн бодит алдаа: "shurshuuriin talaar medeelel awii" гэсэн энгийн
+// мэдээллийн хүсэлт ямар ч JS handler-т баригдалгүй LLM руу унаж, тэндээсээ
+// ХУДАЛ handoff болж хэрэглэгч алдагдсан. Одоо stem-ээр найдвартай барина.
+const INFO_STEMS = [
+  'мэдээл', 'medeel', 'medeell', 'мэдээлл',
+  'тайлбар', 'tailbar', 'taylbar',
+  'танилцуул', 'tanilts', 'tanilcuul', 'tanilzuul', 'taniltsuul',
+  'дэлгэрэнг', 'delgereng', 'delgerng', 'дэлгэрүүл'
+];
+const ABOUT_STEMS = ['талаар', 'talaar', 'talar', 'тухай', 'tuhai', 'tukhai', 'тухайд'];
+const PRODUCT_STEMS = [
+  'шүршүүр', 'шуршуур', 'шүршүр', 'шршүүр', 'шүрш',
+  'shurshuur', 'shvrshvvr', 'shurshur', 'shursh', 'shvrsh', 'shursuur',
+  'душ', 'dush',
+  'багц', 'bagts', 'bagc', 'бэлгийн', 'belgiin', 'belgin',
+  'бүтээгдэхүүн', 'buteegdehuun', 'buteegdehvvn', 'product'
+];
+// Эдгээр сэдэв гарвал энэ нь Багцын танилцуулгын хүсэлт БИШ
+const INFO_BLOCKER_STEMS = [
+  'хүргэлт', 'hurgelt', 'khurgelt',
+  'төлбөр', 'tulbur', 'tolbor', 'tulbur',
+  'банк', 'bank', 'данс', 'dans',
+  'захиалг', 'zahialg', 'zakhialg',
+  'баталгаа', 'batalgaa'
+];
+
+function hasShowerWord(text) {
+  return hasAnyStem(text, PRODUCT_STEMS);
+}
+
 function isDirectInfoRequest(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
-  return DIRECT_INFO_KEYWORDS.some(kw => lower.includes(kw));
+  if (hasAnyStem(text, INFO_BLOCKER_STEMS)) return false;
+  if (DIRECT_INFO_KEYWORDS.some(kw => lower.includes(kw))) return true;
+  if (hasAnyStem(text, INFO_STEMS)) return true;                       // "мэдээлэл", "medeelel", "танилцуул"
+  if (hasShowerWord(text) && hasAnyStem(text, ABOUT_STEMS)) return true; // "shurshuuriin talaar"
+  return false;
+}
+
+// ── POST-ORDER CONFUSION (NEW v2.9.6) ──
+// ЗӨВХӨН эдгээр үг байвал л "ойлголтын зөрүү" салбар зөвшөөрөгдөнө.
+const POST_CONFUSION_PATTERNS = [
+  'запас ирнэ гэж бодсон', 'zapas irne gej bodson',
+  'шүүлтүүр ирэх ёстой', 'ирэх гэж бодсон',
+  'буруу ойлгосон', 'buruu oilgoson', 'buruu oilg',
+  'ийм байсангүй', 'iim bsiin', 'iim gej bodoogui', 'ийм гэж бодоогүй',
+  'өөр зүйл захиалсан', 'өөр зүйл ирсэн', 'буруу ирсэн', 'buruu irsen',
+  'ирээгүй', 'iregui', 'хүргэгдээгүй', 'hurgegdeegui'
+];
+
+function isPostOrderConfusion(text) {
+  if (!text) return false;
+  const lower = String(text).toLowerCase();
+  return POST_CONFUSION_PATTERNS.some(p => lower.includes(p));
 }
 
 // ── UGC/INFLUENCER DETECTION ──
@@ -1428,6 +1504,13 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 • Хариултаа ХЭЗЭЭ Ч Латинаар бичихгүй — ҮРГЭЛЖ Кириллээр.
 • Хэрэглэгчийн бичлэгийг ХЭЗЭЭ Ч засаж сургахгүй, тайлбарлахгүй.
 • Ойлгомжгүй бол богино тодруулах асуулт тавь, таамаглал дээр захиалга үүсгэхгүй.
+• ⛔⛔ ОЙЛГОМЖГҮЙ БАЙХ нь handoff хийх шалтгаан БИШ. Мессежийг ойлгоогүй үедээ
+  ХЭЗЭЭ Ч [HANDOFF_NEEDED] тавихгүй, "ойлголтын зөрүү", "уучлаарай ойлгосонгүй"
+  гэж бичихгүй. ЗӨВХӨН ингэж хариул:
+  "Мэдээж 🌸 Юуны талаар дэлгэрэнгүй мэдэхийг хүсэж байна вэ? Бэлгийн Багц уу,
+  эсвэл нөөц шүүлтүүр үү?"
+• Латинаар бичсэн мессежийг ойлгохгүй байгаа нь ЧИНИЙ асуудал — хэрэглэгчийг
+  менежер рүү хаяхгүй. Дахин уншиж, ойролцоо утгыг нь ол.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. ЭХНИЙ МЭНДЧИЛГЭЭ
@@ -1457,15 +1540,27 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   → BUNDLE (шүршүүр, бэлгийн багц) ХЭЗЭЭ Ч САНАЛ БОЛГОХГҮЙ — хэрэглэгч filter л хүссэн
   → ⛔ Twin Pack / Family Pack / Single Pack ГЭЖ БАЙХГҮЙ. ХЭЗЭЭ Ч дурдахгүй.
 
-▸ POST-ИЙН CONFUSION — "ирээгүй", "ийм гэж бодоогүй", "буруу ойлгосон":
-  → Эхлээд уяан зөвшөөрөл: "Уучлаарай, ойлголтын зөрүү гарсан байна"
-  → Дараа нь хүний оператор руу шилжүүлэх: [HANDOFF_NEEDED]
+▸ POST-ИЙН CONFUSION — ⚠️ ЗӨВХӨН АЛЬ ХЭДИЙН ЗАХИАЛГА ӨГСӨН хэрэглэгч андуурсан үед:
+  Keyword: "запас ирнэ гэж бодсон", "шүүлтүүр ирэх ёстой", "буруу ойлгосон",
+  "ийм байсангүй", "vasiin zapas", "iim bsiin", "өөр зүйл захиалсан",
+  "ирээгүй", "хүргэгдээгүй", "ийм гэж бодоогүй"
+  ⛔⛔ ЭНЭ САЛБАРЫГ ЗӨВХӨН дээрх утгатай мессежид хэрэглэнэ.
+  ⛔ Хэрэглэгч захиалга өгөөгүй бол ЭНЭ САЛБАР РУУ ХЭЗЭЭ Ч ОРОХГҮЙ.
+  ⛔ Мессежийг ойлгохгүй байгаа, Латинаар бичсэн, эсвэл энгийн мэдээлэл/үнэ
+     асуусан бол ЭНЭ САЛБАР РУУ ХЭЗЭЭ Ч ОРОХГҮЙ.
+  ⛔ "Уучлаарай, ойлголтын зөрүү гарсан байна" гэсэн өгүүлбэрийг өөр ЯМАР Ч
+     тохиолдолд бичихгүй.
+  → Нөхцөл бүрдсэн үед: уяан зөвшөөрөл + [HANDOFF_NEEDED]
   → ШУУД шинэ захиалга авч эхлэхгүй — context-ийг ойлгох
 
 ▸ МЭДЭЭЛЭЛ / ҮНЭ хайж байгаа:
   Keyword: "үнэ", "хэд", "хэдэн төгрөг", "price", "une hed ve"
   → ⚠️ ҮНИЙН HOOK-ийг JS КОД өөрөө явуулна. Та үнийн танилцуулгыг ДАВТАХГҮЙ.
-  → Хэрэглэгч "дэлгэрэнгүй" гэвэл ч JS код өөрөө задаргааг явуулна.
+  → Хэрэглэгч "дэлгэрэнгүй", "мэдээлэл авъя", "шүршүүрийн талаар", "medeelel awii",
+    "shurshuuriin talaar" гэх мэт МЭДЭЭЛЛИЙН хүсэлт тавьбал ихэвчлэн JS код өөрөө
+    задаргааг явуулна. Хэрэв ямар нэг шалтгаанаар чам дээр ирвэл §4-ийн
+    "ДЭЛГЭРЭНГҮЙ АСУУВАЛ" загварыг бич — ХЭЗЭЭ Ч handoff хийхгүй.
+  → ⛔ Мэдээлэл асуусан хэрэглэгчийг менежер рүү шилжүүлэх нь ХАТУУ ХОРИОТОЙ.
 
 ▸ ГАРАЛ ҮҮСЭЛ асуувал ("аль улсынх вэ", "хаанахийх вэ", "haanahiih ve"):
   → ⚠️ ЭНЭ ХАРИУЛТЫГ Ч JS КОД өөрөө явуулна. Та давтахгүй.
@@ -1693,6 +1788,13 @@ CE дугаар: HX240303050484"
 • ОЧИЖ ҮЗЭХ хүсэлт — "очиж", "очмоор", "нүдээр харах", "дэлгүүр очих", "офис очих", "байршил", "газар дээр нь" → handoff
 • ОРОН НУТГИЙН хүргэлт — Дархан, Эрдэнэт, Чойбалсан, гэх аймгийн хот → JS код шууд handle хийнэ
 • ҮНИЙН МАНИПУЛЯЦИ — "хямдрал нэмэх", "discount нэм", "арай хямд" → JS код handle хийнэ
+
+⛔⛔ HANDOFF ХИЙХ НЬ ХОРИОТОЙ тохиолдлууд:
+• Хэрэглэгч бүтээгдэхүүний мэдээлэл, үнэ, өнгө, бүрэлдэхүүн асуусан
+• Хэрэглэгч "авмаар байна", "авъя", "захиалъя" гэсэн — энэ бол ХУДАЛДАЖ АВАХ дохио
+• Чи мессежийг ойлгоогүй — тодруулах асуулт тавь
+• Хэрэглэгч Латинаар бичсэн
+Эдгээрт handoff хийх нь борлуулалтыг шууд алдана.
 
 Хариулт: "Манай менежер тантай удахгүй холбогдох болно 🌸 [HANDOFF_NEEDED]"
 
@@ -2240,6 +2342,32 @@ app.post('/webhook', async (req, res) => {
       }
 
       // ═══════════════════════════════════════════════════════
+      // 13) ШҮРШҮҮР / БАГЦ АВАХ ИНТЕНТ (NEW v2.9.6)
+      // "shurshuur awmaar baina aa", "шүршүүр авъя", "багц захиалъя" —
+      // v2.9.5-д эдгээр ямар ч handler-т баригдалгүй LLM руу унаж, худал
+      // handoff болж байсан. Одоо шууд өнгө сонгуулж захиалга эхлүүлнэ.
+      // ⚠️ Мэдээллийн хүсэлт (дээрх #12) ҮРГЭЛЖ түрүүлнэ.
+      // ═══════════════════════════════════════════════════════
+      const buyState = getLiveOrder(senderId);
+      if (hasShowerWord(text) && isBuyIntent(text)
+        && !hasFilterWord(text)
+        && !isDirectInfoRequest(text)
+        && buyState.orderType !== 'FILTER'
+        && !buyState.filterStage
+        && !buyState.color
+        && buyState.status !== 'placed'
+        && !looksLikeAddress(text)
+        && !parseOrderSlots(text, {}).color) {
+        console.log(`🚿 Bundle buy intent [${senderId}]: ${text.slice(0, 60)}`);
+        addToHistory(senderId, 'user', text);
+        addToHistory(senderId, 'assistant', BUNDLE_COLOR_ASK);
+        setOrder(senderId, { ...buyState, orderType: 'BUNDLE', status: 'collecting' });
+        await sendDM(senderId, BUNDLE_COLOR_ASK);
+        markGreeting(senderId);
+        continue;
+      }
+
+      // ═══════════════════════════════════════════════════════
       // PHONE INPUT VALIDATION (v2.9.2) — LLM-д ХҮРГЭХГҮЙ
       // ═══════════════════════════════════════════════════════
       const phoneCheck = validatePhoneInput(text);
@@ -2303,7 +2431,7 @@ app.post('/webhook', async (req, res) => {
         const reply = await askGPT_DM(senderId, text, buildOrderStateNote(senderId));
 
         // BOT REPLY-ийн доторх tag-уудыг шинжлэх
-        const isHandoff = shouldTriggerHandoff(reply);
+        let isHandoff = shouldTriggerHandoff(reply);  // v2.9.6: GUARD #6 цуцалж чадна
         const isOrder = isOrderComplete(reply);
         const isCOD = isCODOrder(reply) || reply.includes('[COD_ORDER]');
         const isBank = reply.includes('[BANK_ORDER]');
@@ -2407,6 +2535,36 @@ app.post('/webhook', async (req, res) => {
             .replace(/\n{3,}/g, '\n\n')
             .trim();
           if (!cleanReply) cleanReply = BUNDLE_DETAIL_ANSWER;
+        }
+
+        // ── v2.9.6 GUARD #6: ХУДАЛ HANDOFF ("ойлголтын зөрүү") ──
+        // БОДИТ АЛДАА (2026.08): "shurshuuriin talaar medeelel awii" гэсэн
+        // энгийн мэдээллийн хүсэлтэд LLM "Уучлаарай, ойлголтын зөрүү гарсан
+        // байна" + [HANDOFF_NEEDED] гаргаж, хэрэглэгчийг менежер рүү хаяж
+        // борлуулалт алдаж байв. Prompt дүрэм бол зөвлөмж — энэ бол хатуу хаалт.
+        const orderPlaced = stOrder.status === 'placed' || Boolean(stOrder.orderId);
+        const genuineEscalation = isComplaint(text)
+          || isUserHandoffRequest(text)
+          || isPostOrderConfusion(text)
+          || isWholesaleRequest(text)
+          || isProvinceDelivery(text);
+
+        if (/ойлголтын зөр|ойлгосонгүй|ойлгохгүй байна/i.test(cleanReply)
+          && !genuineEscalation && !orderPlaced) {
+          console.log(`🛑 GUARD#6 худал "ойлголтын зөрүү" таслав [${senderId}]`);
+          cleanReply = CLARIFY_ASK;
+          isHandoff = false;
+        }
+
+        // Энгийн худалдааны асуултад handoff тавьсан бол цуцална
+        if (isHandoff && !genuineEscalation && !orderPlaced
+          && (isDirectInfoRequest(text) || hasShowerWord(text)
+              || isPriceQuestion(text) || isBuyIntent(text))) {
+          console.log(`🛑 GUARD#6 худал handoff (энгийн худалдааны асуулт) таслав [${senderId}]`);
+          if (/менежер|оператор|холбогдох болно|ойлголтын/i.test(cleanReply) || cleanReply.length < 12) {
+            cleanReply = CLARIFY_ASK;
+          }
+          isHandoff = false;
         }
 
         await sendDM(senderId, cleanReply);
@@ -2736,7 +2894,7 @@ app.get('/meta-stats', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.5',
+  status: '🌸 SkinBloom Bot running', version: '2.9.6',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2763,7 +2921,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.5 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.6 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.5 асаалаа!</b>\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.6 асаалаа!</b>\n\n🔧 <b>ЯАРАЛТАЙ ЗАСВАР (v2.9.6):</b>\n🛑 ХУДАЛ HANDOFF засав — мэдээлэл асуусан хүнийг менежер рүү хаяхаа болив (GUARD #6)\n✅ Латин "awmaar / awii / talaar" таних болов\n✅ "shurshuuriin talaar medeelel awii" → Багцын танилцуулга\n✅ "shurshuur awmaar baina" → шууд өнгө сонгуулна\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

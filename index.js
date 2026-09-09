@@ -257,10 +257,26 @@ function isPureGreeting(text) {
   if (!t || t.length > 16) return false;
   return /^(сайн\s*уу|сайн\s*байна\s*уу|сайнуу|sain\s*uu|sain\s*baina\s*uu|hi+|hello+|hey+|мэнд[эг]?|байна\s*уу|baina\s*uu|өө\s*байна\s*уу|юу\s*вэ|yuu?\s*ve)$/i.test(t);
 }
-// ── FIRST-CONTACT GREETING (v2.8.5) — детерминистик, JS-ээс явна ──
+// ── FIRST-CONTACT GREETING (v2.9.7) — детерминистик, JS-ээс явна ──
 const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
-📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
+Манай менежертэй шууд холбогдохыг хүсвэл Like 👍 товч илгээнэ үү.
 Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+// ── FIRST-TIME PRICE HOOK TRACKING (NEW v2.9.7) ──
+// PRICE_ANSWER зөвхөн хэрэглэгчийн ЭХНИЙ үнийн асуултад явна.
+const priceHookShown = new Map();
+const PRICE_HOOK_TTL_MS = 6 * 60 * 60 * 1000;
+function hasPriceHookShown(senderId) {
+  const ts = priceHookShown.get(senderId);
+  if (!ts) return false;
+  if (Date.now() - ts > PRICE_HOOK_TTL_MS) {
+    priceHookShown.delete(senderId);
+    return false;
+  }
+  return true;
+}
+function markPriceHookShown(senderId) {
+  priceHookShown.set(senderId, Date.now());
+}
 // =====================================================================
 // ТЕКСТ НОРМАЛЧЛАЛ — ЛАТИН БИЧЛЭГИЙГ ТАНИХ СУУРЬ (NEW v2.9.3)
 // =====================================================================
@@ -353,6 +369,15 @@ const FILTER_STEMS = [
 function hasFilterWord(text) {
   return hasAnyStem(text, FILTER_STEMS);
 }
+// "Филтертэй Шүршүүр" = Бэлгийн Багцын нэр (v2.9.7 hook). Нөөц шүүлтүүрийн flow биш.
+const BUNDLE_FILTER_PHRASES = [
+  'филтертэй шүршүүр', 'фильтертэй шүршүүр', 'филтертэй шууршуур',
+  'шүүлтүүртэй шүршүүр', 'шуултууртэй шуршуур',
+  'filtertei shurshuur', 'filtertei bagts', 'филтертэй багц'
+];
+function isBundleFilterPhrase(text) {
+  return hasAnyPhrase(text, BUNDLE_FILTER_PHRASES);
+}
 // ── ҮНИЙН АСУУЛТ (NEW v2.9.3) ──
 const PRICE_STEMS = ['үнэ', 'унэ', 'үний', 'уний', 'үнэт', 'унэт', 'үнээ',
   'une', 'unii', 'unee', 'unet', 'price', 'прайс', 'өртөг', 'ortog', 'ortg'];
@@ -406,9 +431,9 @@ function isOriginQuestion(text) {
 // ⚠️ Messenger markdown РЕНДЕРЛЭДЭГГҮЙ: `~~текст~~` нь хэрэглэгчид яг
 //    `~~текст~~` гэж харагдана. Тиймээс хаа сайгүй `➜` сум ашиглана.
 // =====================================================================
-// 1) ҮНЭ асуусан үед — Бэлгийн Багцын үндсэн hook
-const PRICE_ANSWER = `Бэлгийн Багц 269'000₮ ➜ 199'900₮ · 69'100₮ хэмнэнэ 🔥
-🎁 2 нэмэлт бүтээгдэхүүн бэлгэнд
+// 1) ҮНЭ асуусан үед — зөвхөн ЭХНИЙ удаагийн hook (v2.9.7)
+const PRICE_ANSWER = `Филтертэй Шүршүүр 269'000₮ ➜ " 199'900₮ " болж хямдарлаа 🔥
+🎁 Шүршүүрийн үнээр 2 нэмэлт бүтээгдэхүүн бэлгэнд аваарай
 🚚 Хүргэлт үнэгүй
 🎨 3 өнгөний сонголт
 Дэлгэрэнгүй мэдэх үү, эсвэл өнгө сонгох уу? 🌸`;
@@ -730,6 +755,31 @@ function isUserHandoffRequest(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   return USER_HANDOFF_REQUEST_KEYWORDS.some(kw => lower.includes(kw));
+}
+// ── LIKE 👍 BUTTON → MANAGER HANDOFF (NEW v2.9.7) ──
+// Messenger-ийн Like товч нь ихэвчлэн sticker_id-тай ирнэ.
+const FB_LIKE_STICKER_IDS = new Set([
+  '369239263222822',
+  '369239343222814',
+  '369239383222810'
+]);
+function isLikeText(text) {
+  if (!text) return false;
+  const t = String(text).trim();
+  return /^(👍|👍🏻|👍🏼|👍🏽|👍🏾|👍🏿|like|лайк)$/i.test(t);
+}
+function isLikeSticker(attachments) {
+  if (!attachments || !attachments.length) return false;
+  return attachments.some(att => {
+    if (att.type !== 'sticker') return false;
+    const sid = String(att.payload?.sticker_id || '');
+    if (FB_LIKE_STICKER_IDS.has(sid)) return true;
+    const url = String(att.payload?.url || '');
+    return /369239263222822|369239343222814|369239383222810/.test(url);
+  });
+}
+function isLikeButtonEvent(text, attachments) {
+  return isLikeText(text) || isLikeSticker(attachments);
 }
 // ── CANCELLATION DETECTION (NEW v2.8.0, refined v2.8.1) ──
 const CANCELLATION_KEYWORDS = [
@@ -1255,7 +1305,7 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Хэрэглэгч анх холбогдоход (сайн уу, hi, hello, мэнд, юу вэ, танилцуулаач, байна уу гэх мэт) ЗААВАЛ дараах текстийг яг ийм байдлаар явуул — өөрчлөхгүй:
 "Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
-📞 Хэрэв та манай менежертэй шууд холбогдохыг хүсвэл "Менежер" гэж бичнэ үү.
+Манай менежертэй шууд холбогдохыг хүсвэл Like 👍 товч илгээнэ үү.
 Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 2. ИНТЕНТ ТАНИХ — ХАМГИЙН ЧУХАЛ ДҮРЭМ
@@ -1351,8 +1401,9 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
 🩶 Slate Gray — час улаан дотоод цагираг, тансаг бараан тон
 Та аль өнгийг сонгох вэ?"
 ▸ ҮНЭ АСУУВАЛ:
-⚠️ JS код доорх текстийг ӨӨРӨӨ явуулна. Та үүнийг ДАВТАЖ бичихгүй:
-"Бэлгийн Багц 269'000₮ ➜ 199'900₮ · 69'100₮ хэмнэнэ 🔥 ..."
+⚠️ JS код ЭХНИЙ үнийн асуултад л hook явуулна. Та үүнийг ДАВТАЖ бичихгүй:
+"Филтертэй Шүршүүр 269'000₮ ➜ 199'900₮ болж хямдарлаа 🔥 ..."
+Дараагийн үнийн асуултад JS дэлгэрэнгүй задаргаа явуулна.
 ▸ ДЭЛГЭРЭНГҮЙ АСУУВАЛ:
 ⚠️ Үүнийг ч JS код өөрөө явуулна. Хэрэв ямар нэг шалтгаанаар та бичих шаардлагатай бол
 ЗӨВХӨН доорх задаргааг бич (⛔ шүүлтүүрийн тусдаа үнэ ЭНД ОРОХГҮЙ):
@@ -1690,6 +1741,21 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
       // ═══════════════════════════════════════════════════════
+      // LIKE 👍 BUTTON — менежер рүү handoff (NEW v2.9.7)
+      // ═══════════════════════════════════════════════════════
+      if (isLikeButtonEvent(text, attachments)) {
+        console.log(`👍 Like button → manager handoff [${senderId}]`);
+        addHandoff(senderId);
+        addToHistory(senderId, 'user', text || '[LIKE 👍]');
+        try {
+          await sendDMWithHumanAgent(senderId, '🌸 Таны хүсэлтийг хүлээн авлаа. Манай менежер удахгүй холбогдох болно.');
+        } catch (e) {
+          console.error('Like handoff DM error:', e.message);
+        }
+        await notifyTelegramHandoff(senderId, text || 'Like 👍 товч');
+        continue;
+      }
+      // ═══════════════════════════════════════════════════════
       // ATTACHMENT HANDLING (v2.8.0) — image/video/voice/sticker/file
       // ═══════════════════════════════════════════════════════
       if (!text && attachments?.length > 0) {
@@ -1887,7 +1953,8 @@ app.post('/webhook', async (req, res) => {
       // 10) ШҮҮЛТҮҮРИЙН ҮНЭ / ЗАХИАЛГА
       // Үнэ хэлэхээс ӨМНӨ заавал "шүршүүрээ авсан уу?" тодруулга.
       // ═══════════════════════════════════════════════════════
-      if (hasFilterWord(text) && (isPriceQuestion(text) || isBuyIntent(text))) {
+      if (hasFilterWord(text) && (isPriceQuestion(text) || isBuyIntent(text))
+        && !isBundleFilterPhrase(text)) {
         const fState = getLiveOrder(senderId);
         // (a) Шүршүүр эзэмшдэг гэдгээ хэлсэн → шууд үнэ
         if (fState.filterOwner === true) {
@@ -1924,20 +1991,26 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
       // ═══════════════════════════════════════════════════════
-      // 11) ҮНИЙН АСУУЛТ (v2.9.4) — LLM руу ХЭЗЭЭ Ч унахгүй
+      // 11) ҮНИЙН АСУУЛТ (v2.9.7) — эхний удаа л PRICE_ANSWER hook
       // ═══════════════════════════════════════════════════════
       const priceState = getLiveOrder(senderId);
       if (isPriceQuestion(text)
-        && !hasFilterWord(text)
+        && (!hasFilterWord(text) || isBundleFilterPhrase(text))
         && priceState.status !== 'placed') {
         const inFilterContext = priceState.orderType === 'FILTER' || Boolean(priceState.filterStage);
         let priceReply;
+        let priceKind = 'FILTER';
         if (inFilterContext) {
           priceReply = priceState.filterOwner === true ? FILTER_PRICE_ANSWER : FILTER_PRICE_NON_OWNER;
-        } else {
+        } else if (!hasPriceHookShown(senderId)) {
           priceReply = PRICE_ANSWER;
+          markPriceHookShown(senderId);
+          priceKind = 'BUNDLE_HOOK';
+        } else {
+          priceReply = BUNDLE_DETAIL_ANSWER;
+          priceKind = 'BUNDLE_DETAIL';
         }
-        console.log(`💰 Price question [${senderId}] (${inFilterContext ? 'FILTER' : 'BUNDLE'}): ${text.slice(0, 60)}`);
+        console.log(`💰 Price question [${senderId}] (${priceKind}): ${text.slice(0, 60)}`);
         addToHistory(senderId, 'user', text);
         addToHistory(senderId, 'assistant', priceReply);
         await sendDM(senderId, priceReply);
@@ -2084,12 +2157,18 @@ app.post('/webhook', async (req, res) => {
           .replace(/__/g, '')
           .replace(/[ \t]{2,}/g, ' ')
           .trim();
-        // ── v2.9.4 GUARD #0b: LLM ӨӨРӨӨ ҮНИЙН HOOK ЗОХИОВОЛ ──
+        // ── v2.9.7 GUARD #0b: LLM ӨӨРӨӨ ҮНИЙН HOOK ЗОХИОВОЛ ──
         if (!isOrder && !isCOD && !isBank
           && /269[\s',.]?000/.test(cleanReply)
           && /199[\s',.]?900/.test(cleanReply)) {
-          console.log(`🛑 LLM-ийн зохиосон үнийн hook → canonical текстээр солив [${senderId}]`);
-          cleanReply = PRICE_ANSWER;
+          if (!hasPriceHookShown(senderId)) {
+            console.log(`🛑 LLM-ийн зохиосон үнийн hook → эхний hook-оор солив [${senderId}]`);
+            cleanReply = PRICE_ANSWER;
+            markPriceHookShown(senderId);
+          } else {
+            console.log(`🛑 LLM-ийн зохиосон үнийн hook → дэлгэрэнгүйгээр солив [${senderId}]`);
+            cleanReply = BUNDLE_DETAIL_ANSWER;
+          }
         }
         // ── v2.9.2 GUARD #1: ДАВХАР GREETING ──
         if (cleanReply.includes('SkinBloom AI туслах тантай холбогдлоо')) {
@@ -2457,7 +2536,7 @@ app.get('/meta-stats', async (req, res) => {
   }
 });
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.6',
+  status: '🌸 SkinBloom Bot running', version: '2.9.7',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2482,7 +2561,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.6 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.7 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.6 асаалаа!</b>\n\n🔧 <b>ЯАРАЛТАЙ ЗАСВАР (v2.9.6):</b>\n🛑 ХУДАЛ HANDOFF засав — мэдээлэл асуусан хүнийг менежер рүү хаяхаа болив (GUARD #6)\n✅ Латин "awmaar / awii / talaar" таних болов\n✅ "shurshuuriin talaar medeelel awii" → Багцын танилцуулга\n✅ "shurshuur awmaar baina" → шууд өнгө сонгуулна\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.7 асаалаа!</b>\n\n🔧 <b>v2.9.7:</b>\n✅ Мэндчилгээ — Like 👍 товчоор менежер дуудна\n✅ Like sticker / 👍 → handoff\n✅ Үнийн hook зөвхөн ЭХНИЙ үнийн асуултад\n✅ Дараагийн үнийн асуулт → дэлгэрэнгүй задаргаа\n\n🔧 <b>v2.9.6:</b>\n🛑 ХУДАЛ HANDOFF засав — мэдээлэл асуусан хүнийг менежер рүү хаяхаа болив (GUARD #6)\n✅ Латин "awmaar / awii / talaar" таних болов\n✅ "shurshuuriin talaar medeelel awii" → Багцын танилцуулга\n✅ "shurshuur awmaar baina" → шууд өнгө сонгуулна\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });

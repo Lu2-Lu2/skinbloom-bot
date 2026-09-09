@@ -6,6 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const app = express();
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use('/public', express.static(PUBLIC_DIR));
+const GREETING_STICKER_FILE = path.join(PUBLIC_DIR, 'greeting-sticker.png');
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const APP_SECRET = process.env.META_APP_SECRET;
@@ -257,10 +260,12 @@ function isPureGreeting(text) {
   if (!t || t.length > 16) return false;
   return /^(сайн\s*уу|сайн\s*байна\s*уу|сайнуу|sain\s*uu|sain\s*baina\s*uu|hi+|hello+|hey+|мэнд[эг]?|байна\s*уу|baina\s*uu|өө\s*байна\s*уу|юу\s*вэ|yuu?\s*ve)$/i.test(t);
 }
-// ── FIRST-CONTACT GREETING (v2.9.7) — детерминистик, JS-ээс явна ──
-const GREETING_MESSAGE = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.
-Манай менежертэй шууд холбогдохыг хүсвэл Like 👍 товч илгээнэ үү.
+// ── FIRST-CONTACT GREETING (v2.9.8) — текст + стикер зураг ──
+const GREETING_MESSAGE_HEAD = `Сайн байна уу! ✨ SkinBloom AI туслах тантай холбогдлоо.`;
+const GREETING_MESSAGE_TAIL = `Манай менежертэй шууд холбогдохыг хүсвэл Like 👍 товч илгээнэ үү.
 Өнгө сонгоход туслах уу, эсвэл бэлгийн багцын талаар мэдэхийг хүсэж байна уу? 🌸`;
+const GREETING_MESSAGE = `${GREETING_MESSAGE_HEAD}
+${GREETING_MESSAGE_TAIL}`;
 // ── FIRST-TIME PRICE HOOK TRACKING (NEW v2.9.7) ──
 // PRICE_ANSWER зөвхөн хэрэглэгчийн ЭХНИЙ үнийн асуултад явна.
 const priceHookShown = new Map();
@@ -493,16 +498,10 @@ const FILTER_ADDRESS_ASK = `Тэгье 🌸 Хүргэлтийн бүрэн ха
 const FILTER_DECLINE_ANSWER = `Ойлголоо 🌸 Хэрэгтэй болбол хэзээ ч бичээрэй.
 Нөөц шүүлтүүрийг 3–6 сард нэг удаа солино.`;
 // 7) ГАРАЛ ҮҮСЭЛ
-const ORIGIN_ANSWER = `SkinBloom бол Герман улсаас гаралтай брэнд 🇩🇪
-Бүтээгдэхүүн Европын CE стандартын дагуу үйлдвэрлэгдсэн.
+const ORIGIN_ANSWER = `Бүтээгдэхүүн Европын CE стандартын дагуу үйлдвэрлэгдсэн.
+Манайх Хонгконг дахь үйлдвэрээс албан ёсны эрхтэйгээр нийлүүлдэг.
 📋 CE сертификат: HX240303050484
 Танд өөр тодруулах зүйл байна уу? 🌸`;
-// ── Аюулгүй хувилбар (идэвхгүй) — ORIGIN_ANSWER-ийн оронд шууд сольж болно ──
-// const ORIGIN_ANSWER_SAFE = `SkinBloom нь Европын CE стандартын дагуу үйлдвэрлэгддэг 🌸
-//
-// 📋 CE сертификат: HX240303050484
-//
-// Танд өөр тодруулах зүйл байна уу?`;
 // ── BOT-SENT MESSAGE TRACKING (legacy v2.8.5/2.8.6 — v2.8.7-д ХЭРЭГЛЭГДЭХГҮЙ) ──
 const recentBotMessages = new Map(); // recipientId → [{ text, ts }, ...]
 const BOT_ECHO_WINDOW_MS = 5 * 60 * 1000;
@@ -1343,8 +1342,9 @@ const SYSTEM_PROMPT = `Та SkinBloom брэндийн AI туслах "Bloom" �
   → ⛔ Мэдээлэл асуусан хэрэглэгчийг менежер рүү шилжүүлэх нь ХАТУУ ХОРИОТОЙ.
 ▸ ГАРАЛ ҮҮСЭЛ асуувал ("аль улсынх вэ", "хаанахийх вэ", "haanahiih ve"):
   → ⚠️ ЭНЭ ХАРИУЛТЫГ Ч JS КОД өөрөө явуулна. Та давтахгүй.
-  → Хэрэв заавал хариулах шаардлага гарвал: "Герман улсаас гаралтай, Европын CE стандартын дагуу үйлдвэрлэгдсэн."
-  → ⛔ Өөр улс (Хонгконг, Хятад, Япон, Солонгос) ХЭЗЭЭ Ч дурдахгүй.
+  → Хэрэв заавал хариулах шаардлага гарвал: "Бүтээгдэхүүн Европын CE стандартын дагуу үйлдвэрлэгдсэн. Манайх Хонгконг дахь үйлдвэрээс албан ёсны эрхтэйгээр нийлүүлдэг."
+  → ⛔ "Герман улсаас гаралтай" гэж ХЭЗЭЭ Ч хэлэхгүй.
+  → ⛔ Хятад / Япон / Солонгос / Made in China ХЭЗЭЭ Ч дурдахгүй.
 ▸ UGC / КОНТЕНТ / КОЛЛАБ:
   Keyword: "ugc", "контент хийх", "коллаб", "collab", "promote", "пиар", "хамтарч", "story дээр тавьсан"
   → Handoff handler
@@ -1497,8 +1497,9 @@ CE дугаар: HX240303050484"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. ТЕХНИКИЙН МЭДЭЭЛЭЛ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Гарал үүсэл: Герман улсаас гаралтай брэнд, Европын CE стандартын дагуу үйлдвэрлэгдсэн
-• ⛔ Өөр улс (Хонгконг, Хятад, Япон, Солонгос) ХЭЗЭЭ Ч дурдахгүй
+• Гарал үүсэл: Европын CE стандартын дагуу үйлдвэрлэгдсэн. Хонгконг дахь үйлдвэрээс албан ёсны эрхтэйгээр нийлүүлдэг.
+• ⛔ "Герман улсаас гаралтай" гэж ХЭЗЭЭ Ч хэлэхгүй
+• ⛔ Хятад / Япон / Солонгос / Made in China ХЭЗЭЭ Ч дурдахгүй
 • CE сертификат: HX240303050484
 • Filter бүтэц — РАДИАЛ, гаднаас дотогшоо: PP нэхмэл бус бүрхүүл (цагаан) → Active Carbon шахмал цагираг хана (хар) → Нягтаршуулж Сайжруулсан PP цөм (цагаан)
 • Усны урсгал: гаднаас дотогшоо 3 давхрыг нэвтэрч → голын хөндий сувгаар дээшээ → oval толгой
@@ -1559,7 +1560,7 @@ CE дугаар: HX240303050484"
 ❌ "шүршүүр хийх" → ✅ "усанд орох"
 ❌ "199,900₮" → ✅ "199'900₮"
 ❌ Хуучин үнийг дараасан markdown тэмдэгт (давхар тильд) → ✅ "269'000₮ ➜ 199'900₮"
-❌ "Хонгконг" / "Хятад" / "Made in China" → ✅ "Герман улсаас гаралтай, Европын CE стандарт"
+❌ "Герман улсаас гаралтай" / "Хятад" / "Made in China" → ✅ "Европын CE стандарт + Хонгконг дахь үйлдвэрээс албан ёсны эрхтэйгээр нийлүүлдэг"
 ❌ "запас" → ✅ "нөөц" (запас зөвхөн хэрэглэгчийн үгийг таних дотоод keyword)
 ❌ 5+ мөрийн хариулт (хэрэв асуугаагүй бол) → ✅ богино, дараа нь дэлгэрнэ
 ❌ Хэрэглэгчийн алдаатай үгийг эсвэл Латин бичлэгийг засаж сургах → ✅ хэзээ ч засахгүй
@@ -1646,6 +1647,38 @@ async function sendDM(recipientId, text) {
   } catch (e) {
     console.error(`✗ DM error → ${recipientId}:`, e.response?.data?.error?.message || e.message);
   }
+}
+async function sendDMImageUrl(recipientId, url) {
+  try {
+    await axios.post('https://graph.facebook.com/v19.0/me/messages', {
+      recipient: { id: recipientId },
+      message: {
+        attachment: {
+          type: 'image',
+          payload: { url, is_reusable: true }
+        }
+      }
+    }, { params: { access_token: PAGE_TOKEN } });
+    console.log(`✓ DM image sent → ${recipientId}`);
+    return true;
+  } catch (e) {
+    console.error(`✗ DM image error → ${recipientId}:`, e.response?.data?.error?.message || e.message);
+    return false;
+  }
+}
+async function sendGreetingSticker(recipientId) {
+  const renderUrl = (process.env.RENDER_URL || '').replace(/\/$/, '');
+  if (renderUrl && fs.existsSync(GREETING_STICKER_FILE)) {
+    const ok = await sendDMImageUrl(recipientId, `${renderUrl}/public/greeting-sticker.png`);
+    if (ok) return true;
+  }
+  console.log('⚠️ Greeting sticker skipped — RENDER_URL or file missing');
+  return false;
+}
+async function sendGreetingWithSticker(recipientId) {
+  await sendDM(recipientId, GREETING_MESSAGE_HEAD);
+  await sendGreetingSticker(recipientId);
+  await sendDM(recipientId, GREETING_MESSAGE_TAIL);
 }
 async function sendDMWithHumanAgent(recipientId, text) {
   recordBotMessage(recipientId, text); // legacy echo tracking (v2.8.7-д ашиглагдахгүй, нөлөөгүй)
@@ -2111,7 +2144,7 @@ app.post('/webhook', async (req, res) => {
           addToHistory(senderId, 'user', text);
           addToHistory(senderId, 'assistant', GREETING_MESSAGE);
           console.log(`👋 First greeting [${senderId}]`);
-          await sendDM(senderId, GREETING_MESSAGE);
+          await sendGreetingWithSticker(senderId);
           continue;
         }
         if (isGreeting && hasRecentGreeting(senderId)) {
@@ -2203,8 +2236,9 @@ app.post('/webhook', async (req, res) => {
             setOrder(senderId, { ...stOrder, filterStage: 'ownership_asked', status: stOrder.status || 'collecting' });
           }
         }
-        // ── v2.9.3 GUARD #4: ГАРАЛ ҮҮСЛИЙН ЗӨРЧИЛ ──
-        if (/хонгконг|хонг конг|hong\s*kong|хятад|hyatad|made in china/i.test(cleanReply)) {
+        // ── v2.9.8 GUARD #4: ГАРАЛ ҮҮСЛИЙН ЗӨРЧИЛ ──
+        // Хонгконг = зөвшөөрөгдсөн нийлүүлэлт. Герман гарал / Хятад / Made in China = буруу.
+        if (/герман улсаас гарал|made in germany|хятад|hyatad|made in china|япон улс|солонгос улс/i.test(cleanReply)) {
           console.log(`🛑 Wrong-origin mention suppressed [${senderId}]`);
           cleanReply = ORIGIN_ANSWER;
         }
@@ -2536,7 +2570,7 @@ app.get('/meta-stats', async (req, res) => {
   }
 });
 app.get('/', (req, res) => res.json({
-  status: '🌸 SkinBloom Bot running', version: '2.9.7',
+  status: '🌸 SkinBloom Bot running', version: '2.9.8',
   time: new Date().toISOString(),
   active_conversations: conversations.size,
   handoff_count: humanHandoff.size
@@ -2561,7 +2595,7 @@ app.post('/handoff/release/:userId', (req, res) => {
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🌸 SkinBloom Bot v2.9.7 listening on port ${PORT}`);
+  console.log(`🌸 SkinBloom Bot v2.9.8 listening on port ${PORT}`);
   await registerTelegramWebhook();
-  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.7 асаалаа!</b>\n\n🔧 <b>v2.9.7:</b>\n✅ Мэндчилгээ — Like 👍 товчоор менежер дуудна\n✅ Like sticker / 👍 → handoff\n✅ Үнийн hook зөвхөн ЭХНИЙ үнийн асуултад\n✅ Дараагийн үнийн асуулт → дэлгэрэнгүй задаргаа\n\n🔧 <b>v2.9.6:</b>\n🛑 ХУДАЛ HANDOFF засав — мэдээлэл асуусан хүнийг менежер рүү хаяхаа болив (GUARD #6)\n✅ Латин "awmaar / awii / talaar" таних болов\n✅ "shurshuuriin talaar medeelel awii" → Багцын танилцуулга\n✅ "shurshuur awmaar baina" → шууд өнгө сонгуулна\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
+  await sendTelegram('🌸 <b>SkinBloom Bot v2.9.8 асаалаа!</b>\n\n🔧 <b>v2.9.8:</b>\n✅ Гарал үүсэл — CE + Хонгконг үйлдвэр (албан ёсны эрх)\n✅ Мэндчилгээнд стикер зураг нэмэв\n\n🔧 <b>v2.9.7:</b>\n✅ Мэндчилгээ — Like 👍 товчоор менежер дуудна\n✅ Like sticker / 👍 → handoff\n✅ Үнийн hook зөвхөн ЭХНИЙ үнийн асуултад\n✅ Дараагийн үнийн асуулт → дэлгэрэнгүй задаргаа\n\n🔧 <b>v2.9.6:</b>\n🛑 ХУДАЛ HANDOFF засав — мэдээлэл асуусан хүнийг менежер рүү хаяхаа болив (GUARD #6)\n✅ Латин "awmaar / awii / talaar" таних болов\n✅ "shurshuuriin talaar medeelel awii" → Багцын танилцуулга\n✅ "shurshuur awmaar baina" → шууд өнгө сонгуулна\n\n🔧 <b>Засвар (v2.9.5):</b>\n✅ Багцын дэлгэрэнгүй → шинэ value-stack (2 үндсэн + 2 бэлэг)\n✅ Нөөц шүүлтүүрийн үнэ багцын тайлбараас БҮРЭН салгав (GUARD #5)\n✅ "дэлгэрэнгүй" гэсэн ганц үг ч детерминистик хариулт авна\n✅ Дэлгүүр https://skinbloom.store/ · Утас 99076895, 95999989\n\n<b>v2.9.4:</b> Үнийн асуулт LLM руу унахгүй, markdown авто-цэвэрлэгээ, 6 цагийн stale context\n<b>v2.9.3:</b> Үнийн hook, шүүлтүүрийн тодруулга, Twin/Family устгав, Латин бичлэг, Герман гарал үүсэл\n<b>v2.9.2:</b> Утасны шалгалт JS-д\n<b>v2.9.0:</b> KDF устгаж РАДИАЛ 3 давхар canon\n\n<b>Командууд:</b>\n<code>/help</code> — бүх команд\n<code>/list</code> — handoff list\n<code>/release [id]</code> — handoff унтраах\n<code>/send [id] [1|2|3]</code> — draft илгээх\n<code>/dm [id] [text]</code> — гар мессеж\n<code>/draft [id]</code> — шинэ draft');
 });
